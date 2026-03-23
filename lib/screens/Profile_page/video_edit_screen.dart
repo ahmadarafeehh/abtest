@@ -584,9 +584,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           setState(() => _selectedOverlayIndex = null);
                           _togglePlayPause();
                         },
-                        onPanStart:  isDrawActive ? _onDrawStart  : null,
-                        onPanUpdate: isDrawActive ? _onDrawUpdate : null,
-                        onPanEnd:    isDrawActive ? _onDrawEnd    : null,
                         child: ColorFiltered(
                           colorFilter: ColorFilter.matrix(_currentMatrix),
                           child: Transform.rotate(
@@ -608,14 +605,26 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               ),
 
-              // Draw strokes (only on preview)
+              // Draw strokes (only on preview) — always rendered, never blocks events
               if (!isTrim)
                 Positioned.fill(
                   child: IgnorePointer(
-                    ignoring: !isDrawActive,
                     child: CustomPaint(
                       painter: DrawingPainter(strokes: _strokes, currentStroke: _currentStroke),
                     ),
+                  ),
+                ),
+
+              // Dedicated draw gesture overlay — sits on top of everything so the
+              // VideoPlayer texture cannot intercept touch events.
+              if (!isTrim && isDrawActive)
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanStart:  _onDrawStart,
+                    onPanUpdate: _onDrawUpdate,
+                    onPanEnd:    _onDrawEnd,
+                    child: const SizedBox.expand(),
                   ),
                 ),
 
