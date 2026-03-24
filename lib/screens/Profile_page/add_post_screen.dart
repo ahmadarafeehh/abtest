@@ -13,6 +13,7 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:video_player/video_player.dart';
 
 class AddPostScreen extends StatefulWidget {
   final VoidCallback? onPostUploaded;
@@ -47,6 +48,11 @@ class _AddPostScreenState extends State<AddPostScreen>
   final double _maxFileSize = 2.5 * 1024 * 1024;
   final double _maxVideoSize = 50 * 1024 * 1024;
   bool _hasAgreedToWarning = false;
+
+  // Video preview player
+  VideoPlayerController? _videoController;
+  bool _isVideoInitialized = false;
+  bool _isPlaying = false;
 
   // Pulse animation for upload button
   late AnimationController _pulseController;
@@ -97,6 +103,7 @@ class _AddPostScreenState extends State<AddPostScreen>
     } else if (widget.initialVideoFile != null) {
       _videoFile = widget.initialVideoFile;
       _isVideo = true;
+      _initVideoPlayer(widget.initialVideoFile!);
     } else {
       _checkIfUserAgreed();
     }
@@ -104,10 +111,43 @@ class _AddPostScreenState extends State<AddPostScreen>
 
   @override
   void dispose() {
+    _videoController?.dispose();
     _descriptionController.dispose();
     _captionFocusNode.dispose();
     _pulseController.dispose();
     super.dispose();
+  }
+
+  Future<void> _initVideoPlayer(File file) async {
+    try {
+      final c = VideoPlayerController.file(
+        file,
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+      );
+      await c.initialize();
+      await c.setLooping(true);
+      if (mounted) {
+        setState(() {
+          _videoController = c;
+          _isVideoInitialized = true;
+        });
+        // Auto-play so the user sees the video immediately
+        await c.play();
+        if (mounted) setState(() => _isPlaying = true);
+      }
+    } catch (e, stack) {
+      await _logError(operation: '_initVideoPlayer', error: e, stack: stack);
+    }
+  }
+
+  Future<void> _toggleVideoPlayback() async {
+    if (_videoController == null || !_isVideoInitialized) return;
+    if (_isPlaying) {
+      await _videoController!.pause();
+    } else {
+      await _videoController!.play();
+    }
+    if (mounted) setState(() => _isPlaying = _videoController!.value.isPlaying);
   }
 
   // ===========================================================================
@@ -255,6 +295,9 @@ class _AddPostScreenState extends State<AddPostScreen>
         _isVideo = false;
         isLoading = true;
         _videoFile = null;
+        _videoController?.dispose();
+        _videoController = null;
+        _isVideoInitialized = false;
       });
 
       final pickedFile = await ImagePicker().pickImage(
@@ -319,6 +362,9 @@ class _AddPostScreenState extends State<AddPostScreen>
         _isVideo = true;
         isLoading = true;
         _file = null;
+        _videoController?.dispose();
+        _videoController = null;
+        _isVideoInitialized = false;
       });
 
       final pickedFile = await ImagePicker().pickVideo(
@@ -343,6 +389,7 @@ class _AddPostScreenState extends State<AddPostScreen>
           _videoFile = videoFile;
           isLoading = false;
         });
+        await _initVideoPlayer(videoFile);
       } else {
         setState(() => isLoading = false);
       }
@@ -407,7 +454,9 @@ class _AddPostScreenState extends State<AddPostScreen>
       return;
     }
 
-    setState(() => isLoading = true);
+    // Pause video before uploading
+    await _videoController?.pause();
+    if (mounted) setState(() { isLoading = true; _isPlaying = false; });
 
     try {
       final String res;
@@ -454,9 +503,13 @@ class _AddPostScreenState extends State<AddPostScreen>
   }
 
   void clearMedia() {
+    _videoController?.dispose();
     setState(() {
       _file = null;
       _videoFile = null;
+      _videoController = null;
+      _isVideoInitialized = false;
+      _isPlaying = false;
       _isVideo = false;
       isLoading = false;
       _descriptionController.clear();
@@ -547,6 +600,45 @@ class _AddPostScreenState extends State<AddPostScreen>
     );
   }
 
+  Widget _buildVideoPreview() {
+    return GestureDetector(
+      onTap: _toggleVideoPlayback,
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.5,
+        color: Colors.black,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            if (_isVideoInitialized && _videoController != null)
+              Center(
+                child: AspectRatio(
+                  aspectRatio: _videoController!.value.aspectRatio,
+                  child: VideoPlayer(_videoController!),
+                ),
+              )
+            else
+              const CircularProgressIndicator(color: Colors.white),
+            // Play/pause overlay icon
+            if (_isVideoInitialized && !_isPlaying)
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.black.withOpacity(0.45),
+                ),
+                child: const Icon(
+                  Icons.play_arrow_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = Provider.of<UserProvider>(context).user;
@@ -602,14 +694,7 @@ class _AddPostScreenState extends State<AddPostScreen>
                       child: Image.memory(_file!, fit: BoxFit.cover),
                     ),
                   if (_isVideo && _videoFile != null)
-                    Container(
-                      height: MediaQuery.of(context).size.height * 0.5,
-                      color: Colors.black,
-                      child: const Center(
-                        child: Icon(Icons.videocam,
-                            color: Colors.white54, size: 64),
-                      ),
-                    ),
+                    _buildVideoPreview(),
                   Padding(
                     padding: const EdgeInsets.all(12.0),
                     child: _buildCaptionInput(user),
