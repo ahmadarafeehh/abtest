@@ -9,7 +9,7 @@ import 'package:Ratedly/screens/Profile_page/add_post_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 // Trim is the first tool so it is selected by default on open.
-enum _Tool { trim, filters, adjust, draw, text, sound, rotate }
+enum _Tool { trim, filters, adjust, draw, text, rotate }
 
 class VideoEditScreen extends StatefulWidget {
   final File videoFile;
@@ -50,10 +50,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // ── Active tool ────────────────────────────────────────────────────────────
   // Defaults to trim so the user lands on the trimmer view.
   _Tool _activeTool = _Tool.trim;
-
-  // ── Audio ──────────────────────────────────────────────────────────────────
-  double _volume  = 1.0;
-  bool   _isMuted = false;
 
   // ── Filter / Adjust ────────────────────────────────────────────────────────
   int             _selectedFilterIndex = 0;
@@ -145,7 +141,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       );
       await c.initialize();
       await c.setLooping(true);
-      await c.setVolume(_volume);
       await _log(operation: 'video_edit/player_init_success', data: {
         'width': c.value.size.width, 'height': c.value.size.height,
         'duration_ms': c.value.duration.inMilliseconds,
@@ -184,7 +179,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   Future<void> _onToolTap(_Tool tool) async {
     if (tool == _Tool.text)  { _enterTextMode(); return; }
-    if (tool == _Tool.sound) { _toggleMute();    return; }
     if (tool == _Tool.rotate) {
       setState(() => _rotationQuarters = (_rotationQuarters + 1) % 4);
       return;
@@ -247,29 +241,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   // ===========================================================================
-  // AUDIO
-  // ===========================================================================
-
-  Future<void> _toggleMute() async {
-    final muted = !_isMuted;
-    await _videoController?.setVolume(muted ? 0.0 : _volume);
-    if (mounted) setState(() => _isMuted = muted);
-  }
-
-  Future<void> _setVolume(double v) async {
-    if (!_isMuted) await _videoController?.setVolume(v);
-    if (mounted) setState(() => _volume = v);
-  }
-
-  // ===========================================================================
   // SILENCE & STOP
   // ===========================================================================
 
   Future<void> _silenceAndStop() async {
-    if (_videoController != null) {
-      await _videoController!.setVolume(0.0);
-      await _videoController!.pause();
-    }
+    await _videoController?.pause();
     if (mounted) setState(() => _isPlaying = false);
   }
 
@@ -335,7 +311,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         );
         await c.initialize();
         await c.setLooping(true);
-        await c.setVolume(_isMuted ? 0.0 : _volume);
         if (mounted) {
           setState(() {
             _videoController    = c;
@@ -752,10 +727,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           children: _Tool.values.where((t) => !(t == _Tool.trim && _trimApplied)).map((tool) {
-            // Sound highlights when audio is ON (not muted), not based on selection.
-            final isActive = tool == _Tool.sound
-                ? !_isMuted
-                : _activeTool == tool;
+            final isActive = _activeTool == tool;
             final showBadge = tool == _Tool.trim && _trimApplied && !isActive;
 
             return GestureDetector(
@@ -857,7 +829,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   Widget _buildTrimDetail() {
     return SingleChildScrollView(
       child: Column(children: [
-        // Scrubber — inset 20px each side so it doesn't span edge-to-edge
         Padding(
           padding: const EdgeInsets.only(top: 8, left: 8, right: 8),
           child: TrimViewer(
@@ -888,7 +859,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Play/pause
               GestureDetector(
                 onTap: () async {
                   try {
@@ -912,7 +882,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               ),
 
-              // Save trim button
               GestureDetector(
                 onTap: (_trimDirty && !_isSavingTrimInline) ? _saveTrim : null,
                 child: AnimatedContainer(
@@ -942,73 +911,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               ),
             ],
-          ),
-        ),
-
-        Divider(color: Colors.white.withOpacity(0.07), height: 1),
-
-        // Audio controls
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-          child: Row(children: [
-            GestureDetector(
-              onTap: _toggleMute,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                width: 36, height: 36,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: _isMuted ? Colors.white.withOpacity(0.14) : Colors.transparent,
-                  border: Border.all(
-                    color: Colors.white.withOpacity(_isMuted ? 0.5 : 0.22), width: 1,
-                  ),
-                ),
-                child: Icon(
-                  _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                  color: Colors.white.withOpacity(0.9), size: 17,
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  trackHeight:  2.5,
-                  thumbShape:   const RoundSliderThumbShape(enabledThumbRadius: 6),
-                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-                  activeTrackColor:         _isMuted ? Colors.white.withOpacity(0.2) : Colors.white,
-                  inactiveTrackColor:       Colors.white.withOpacity(0.16),
-                  thumbColor:               _isMuted ? Colors.white.withOpacity(0.35) : Colors.white,
-                  overlayColor:             Colors.white.withOpacity(0.12),
-                  disabledActiveTrackColor: Colors.white.withOpacity(0.2),
-                  disabledThumbColor:       Colors.white.withOpacity(0.35),
-                ),
-                child: Slider(
-                  value: _volume, min: 0.0, max: 1.0,
-                  onChanged: _isMuted ? null : _setVolume,
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            SizedBox(
-              width: 40,
-              child: Text(
-                _isMuted ? 'Muted' : '${(_volume * 100).round()}%',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(_isMuted ? 0.3 : 0.55),
-                  fontSize: 11,
-                ),
-                textAlign: TextAlign.right,
-              ),
-            ),
-          ]),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(left: 60, top: 4, bottom: 4),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: Text('Original Audio',
-                style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 10)),
           ),
         ),
       ]),
@@ -1057,7 +959,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       case _Tool.adjust:  return Icons.tune_rounded;
       case _Tool.draw:    return Icons.brush_rounded;
       case _Tool.text:    return Icons.text_fields_rounded;
-      case _Tool.sound:   return _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded;
       case _Tool.rotate:  return Icons.rotate_90_degrees_cw_rounded;
     }
   }
@@ -1069,7 +970,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       case _Tool.adjust:  return 'Adjust';
       case _Tool.draw:    return 'Draw';
       case _Tool.text:    return 'Text';
-      case _Tool.sound:   return _isMuted ? 'Unmute' : 'Sound';
       case _Tool.rotate:  return 'Rotate';
     }
   }
