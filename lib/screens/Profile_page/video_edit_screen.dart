@@ -1,14 +1,17 @@
 // lib/screens/Profile_page/video_edit_screen.dart
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:video_player/video_player.dart';
 import 'package:video_trimmer/video_trimmer.dart';
+import 'package:ffmpeg_kit_flutter/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter/return_code.dart';
 import 'package:Ratedly/screens/Profile_page/add_post_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
-// Trim is the first tool so it is selected by default on open.
 enum _Tool { trim, filters, adjust, draw, text, rotate }
 
 class VideoEditScreen extends StatefulWidget {
@@ -32,9 +35,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _isPlaying          = false;
 
   // ── Active video file ──────────────────────────────────────────────────────
-  // Starts as the original file. Replaced with the trimmed file when the user
-  // presses Save in the Trim panel — so all other tools and the final post use
-  // the trimmed version, not the original.
   late File _activeVideoFile;
 
   // ── Trimmer ────────────────────────────────────────────────────────────────
@@ -42,13 +42,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   double _startValue           = 0.0;
   double _endValue             = 0.0;
   bool   _isTrimPlaying        = false;
-  bool   _isSavingTrim         = false;   // Next button spinner
-  bool   _isSavingTrimInline   = false;   // Save button spinner inside trim panel
+  bool   _isSavingTrim         = false;
+  bool   _isSavingTrimInline   = false;
   bool   _trimDirty            = false;
   bool   _trimApplied          = false;
 
   // ── Active tool ────────────────────────────────────────────────────────────
-  // Defaults to trim so the user lands on the trimmer view.
   _Tool _activeTool = _Tool.trim;
 
   // ── Filter / Adjust ────────────────────────────────────────────────────────
@@ -56,6 +55,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   EditAdjustments _adj = const EditAdjustments();
 
   // ── Draw ───────────────────────────────────────────────────────────────────
+  /// RepaintBoundary key wrapping draw strokes + text overlays.
+  /// Captured as a PNG in [_captureOverlayPng] and baked into the output via ffmpeg.
+  final GlobalKey _overlayKey = GlobalKey();
   final List<DrawStroke> _strokes = [];
   DrawStroke? _currentStroke;
   DrawTool _drawTool  = DrawTool.brush;
@@ -130,10 +132,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   Future<void> _initPreviewPlayer() async {
-    await _log(operation: 'video_edit/player_init_start', data: {
-      'filePath': widget.videoFile.path,
-      'fileExists': widget.videoFile.existsSync(),
-    });
     try {
       final c = VideoPlayerController.file(
         widget.videoFile,
@@ -141,11 +139,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       );
       await c.initialize();
       await c.setLooping(true);
-      await _log(operation: 'video_edit/player_init_success', data: {
-        'width': c.value.size.width, 'height': c.value.size.height,
-        'duration_ms': c.value.duration.inMilliseconds,
-        'aspectRatio': c.value.aspectRatio,
-      });
       if (mounted) {
         setState(() {
           _videoController    = c;
@@ -157,7 +150,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       await _log(
         operation: 'video_edit/player_init_error',
         errorMessage: e.toString(), stackTrace: st.toString(),
-        data: { 'filePath': widget.videoFile.path },
+        data: {'filePath': widget.videoFile.path},
       );
     }
   }
@@ -166,19 +159,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // TOOL SELECTION
   // ===========================================================================
 
-  /// Reloads the trimmer on the current active file so the VideoViewer
-  /// re-acquires its platform texture after having been hidden.
-  /// The previously stored [_startValue] / [_endValue] are NOT touched —
-  /// they remain valid for [saveTrimmedVideo] even though the TrimViewer
-  /// handle visuals reset to full-range.
   void _reloadTrimmer() {
     _trimmer.loadVideo(videoFile: _activeVideoFile);
-    // Reset trim-playing state since the trimmer re-initialises paused.
     if (mounted) setState(() => _isTrimPlaying = false);
   }
 
   Future<void> _onToolTap(_Tool tool) async {
-    if (tool == _Tool.text)  { _enterTextMode(); return; }
+    if (tool == _Tool.text) { _enterTextMode(); return; }
     if (tool == _Tool.rotate) {
       setState(() => _rotationQuarters = (_rotationQuarters + 1) % 4);
       return;
@@ -188,46 +175,34 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final goingTrim = tool == _Tool.trim;
 
     if (goingTrim && !wasTrim) {
-      // ── Returning to Trim ──────────────────────────────────────────────
-      // 1. Stop the preview player so its texture doesn't compete with the
-      //    trimmer's internal VideoPlayerController.
       await _videoController?.pause();
       if (mounted) setState(() => _isPlaying = false);
-
-      // 2. Reload the trimmer so VideoViewer re-acquires its platform
-      //    texture — this is what fixes the blank-screen bug.
       _reloadTrimmer();
     }
 
     if (!goingTrim && wasTrim) {
-      // ── Leaving Trim ───────────────────────────────────────────────────
-      // 1. Pause the trimmer's own playback before hiding it, so both
-      //    VideoPlayerControllers are not active simultaneously (which is
-      //    what causes the texture conflict in the first place).
       if (_isTrimPlaying) {
         try {
           await _trimmer.videoPlaybackControl(
-            startValue: _startValue,
-            endValue: _endValue,
-          );
+              startValue: _startValue, endValue: _endValue);
         } catch (_) {}
         if (mounted) setState(() => _isTrimPlaying = false);
       }
-
-      // 2. Start the preview player.
       await _videoController?.play();
-      if (mounted) setState(() => _isPlaying = _videoController?.value.isPlaying ?? false);
+      if (mounted) {
+        setState(() => _isPlaying = _videoController?.value.isPlaying ?? false);
+      }
     }
 
-    // Toggle off if already active (except trim — always show trim panel).
     setState(() {
-      _activeTool = (tool == _activeTool && tool != _Tool.trim) ? _Tool.trim : tool;
-      _isDrawing  = false;
+      _activeTool =
+          (tool == _activeTool && tool != _Tool.trim) ? _Tool.trim : tool;
+      _isDrawing = false;
     });
   }
 
   // ===========================================================================
-  // PLAY / PAUSE  (preview player)
+  // PLAY / PAUSE
   // ===========================================================================
 
   Future<void> _togglePlayPause() async {
@@ -251,16 +226,15 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   // ===========================================================================
   // SAVE TRIM
-  // Re-encodes the trimmed segment, swaps _activeVideoFile, and re-initialises
-  // the preview player so every other tool immediately sees the shorter clip.
   // ===========================================================================
 
   Future<void> _saveTrim() async {
-    if (!_trimDirty) return; // nothing changed, nothing to do
+    if (!_trimDirty) return;
     if (mounted) setState(() => _isSavingTrimInline = true);
 
     await _log(operation: 'trim/save_start', data: {
-      'startValue': _startValue, 'endValue': _endValue,
+      'startValue': _startValue,
+      'endValue': _endValue,
       'activeFilePath': _activeVideoFile.path,
     });
 
@@ -278,9 +252,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           .timeout(const Duration(seconds: 30), onTimeout: () => null);
 
       if (savedPath != null) {
-        final f       = File(savedPath);
-        final exists  = f.existsSync();
-        final bytes   = exists ? f.lengthSync() : 0;
+        final f      = File(savedPath);
+        final exists = f.existsSync();
+        final bytes  = exists ? f.lengthSync() : 0;
         await _log(operation: 'trim/saved_inline', data: {
           'savedPath': savedPath, 'exists': exists, 'sizeBytes': bytes,
         });
@@ -288,18 +262,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       }
     } catch (e, st) {
       await _log(
-        operation: 'trim/save_inline_error',
-        errorMessage: e.toString(), stackTrace: st.toString(),
-      );
+          operation: 'trim/save_inline_error',
+          errorMessage: e.toString(), stackTrace: st.toString());
     }
 
     if (!mounted) return;
 
     if (trimmedFile != null) {
-      // Swap the active file reference.
       setState(() => _activeVideoFile = trimmedFile!);
-
-      // Dispose old controller and spin up a new one pointing to trimmed file.
       final old = _videoController;
       setState(() { _isVideoInitialized = false; _isPlaying = false; });
       old?.dispose();
@@ -316,26 +286,20 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             _videoController    = c;
             _isVideoInitialized = true;
             _isPlaying          = false;
-            // Reset trim state — the trimmed file is now the baseline.
-            _trimDirty   = false;
-            _trimApplied = true;
-            _startValue  = 0.0;
-            _endValue    = 0.0;
-            // Trim tab is now hidden — move to filters so the panel isn't blank.
-            _activeTool  = _Tool.filters;
+            _trimDirty          = false;
+            _trimApplied        = true;
+            _startValue         = 0.0;
+            _endValue           = 0.0;
+            _activeTool         = _Tool.filters;
           });
-          // Reload the trimmer on the new (shorter) file so the scrubber
-          // reflects the trimmed duration.
           _trimmer.loadVideo(videoFile: trimmedFile);
-          // Start playback so the trimmed clip is immediately visible in preview.
           c.play();
           if (mounted) setState(() => _isPlaying = true);
         }
       } catch (e, st) {
         await _log(
-          operation: 'trim/reinit_error',
-          errorMessage: e.toString(), stackTrace: st.toString(),
-        );
+            operation: 'trim/reinit_error',
+            errorMessage: e.toString(), stackTrace: st.toString());
       }
     }
 
@@ -350,8 +314,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     setState(() {
       _isDrawing     = true;
       _currentStroke = DrawStroke(
-        points: [d.localPosition], color: _drawColor,
-        strokeWidth: _drawSize,   tool: _drawTool,
+        points: [d.localPosition],
+        color: _drawColor,
+        strokeWidth: _drawSize,
+        tool: _drawTool,
       );
     });
   }
@@ -417,7 +383,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _overTrash(Offset pos, double h) => pos.dy * h >= h - kTrashZoneH;
 
   void _onTextDragStart(int i) => setState(() {
-    _isDragging = true; _dragIndex = i; _selectedOverlayIndex = i; _isOverTrash = false;
+    _isDragging = true; _dragIndex = i;
+    _selectedOverlayIndex = i; _isOverTrash = false;
   });
 
   void _onTextDragUpdate(int i, DragUpdateDetails d, double w, double h) {
@@ -426,7 +393,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       (o.position.dx + d.delta.dx / w).clamp(0.0, 0.9),
       (o.position.dy + d.delta.dy / h).clamp(0.0, 0.99),
     );
-    setState(() { _overlays[i] = o.copyWith(position: p); _isOverTrash = _overTrash(p, h); });
+    setState(() {
+      _overlays[i] = o.copyWith(position: p);
+      _isOverTrash = _overTrash(p, h);
+    });
   }
 
   void _onTextDragEnd(int i, double h) {
@@ -458,12 +428,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   // ===========================================================================
-  // NEXT
+  // NEXT — bake all edits into the video file, then navigate
   // ===========================================================================
 
   Future<void> _onNext() async {
-    // If the user moved trim handles but never pressed Save, encode now as a
-    // fallback so they never accidentally post the full original.
     if (_trimDirty) {
       await _saveTrim();
       if (!mounted) return;
@@ -472,27 +440,220 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     await _silenceAndStop();
     if (!mounted) return;
 
-    await _log(operation: 'trim/navigate', data: {
-      'activeFilePath':   _activeVideoFile.path,
-      'activeFileExists': _activeVideoFile.existsSync(),
-      'activeFileSizeBytes': _activeVideoFile.existsSync()
-          ? _activeVideoFile.lengthSync() : null,
-      'trimApplied': _trimApplied,
-    });
+    // Reuse the Next-button spinner while baking.
+    setState(() => _isSavingTrim = true);
 
-    if (!mounted) return;
-    Navigator.push(context, MaterialPageRoute(builder: (_) => AddPostScreen(
-      initialVideoFile: _activeVideoFile,
-      onPostUploaded:   widget.onPostUploaded,
-    )));
+    try {
+      final outputFile = await _bakeEdits();
+      if (!mounted) return;
+      Navigator.push(context, MaterialPageRoute(
+        builder: (_) => AddPostScreen(
+          initialVideoFile: outputFile,
+          onPostUploaded:   widget.onPostUploaded,
+        ),
+      ));
+    } catch (e, st) {
+      await _log(
+          operation: 'bake/error',
+          errorMessage: e.toString(), stackTrace: st.toString());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Failed to process video. Please try again.')));
+      }
+    } finally {
+      if (mounted) setState(() => _isSavingTrim = false);
+    }
   }
 
-  List<double> get _currentMatrix =>
-      _adj.combinedMatrix(kFilters[_selectedFilterIndex].matrix);
+  // ===========================================================================
+  // BAKE EDITS
+  // Writes draw strokes / text / rotation / colour filter into the video file
+  // using a single ffmpeg pass.
+  // ===========================================================================
+
+  Future<File> _bakeEdits() async {
+    final matrix       = _adj.combinedMatrix(kFilters[_selectedFilterIndex].matrix);
+    final hasColorEdit = _selectedFilterIndex != 0 || !_adj.isIdentity;
+    final hasRotation  = _rotationQuarters != 0;
+    final hasOverlay   = _strokes.isNotEmpty || _overlays.isNotEmpty;
+
+    // Nothing to bake — hand the trimmed file straight to AddPostScreen.
+    if (!hasColorEdit && !hasRotation && !hasOverlay) return _activeVideoFile;
+
+    // Capture the draw+text layer as a transparent PNG.
+    File? overlayFile;
+    if (hasOverlay) overlayFile = await _captureOverlayPng();
+
+    final outPath = '${Directory.systemTemp.path}'
+        '/baked_${DateTime.now().millisecondsSinceEpoch}.mp4';
+
+    final cmd = _buildFFmpegCommand(
+      inputPath:    _activeVideoFile.path,
+      outputPath:   outPath,
+      matrix:       matrix,
+      hasColorEdit: hasColorEdit,
+      overlayFile:  overlayFile,
+    );
+
+    await _log(operation: 'bake/ffmpeg_start', data: {'cmd': cmd});
+
+    final session    = await FFmpegKit.execute(cmd);
+    final returnCode = await session.getReturnCode();
+
+    // Always delete the temp PNG.
+    try { overlayFile?.deleteSync(); } catch (_) {}
+
+    if (!ReturnCode.isSuccess(returnCode)) {
+      final logs = await session.getAllLogsAsString() ?? '';
+      await _log(operation: 'bake/ffmpeg_error', data: {
+        'logs': logs.length > 2000 ? logs.substring(0, 2000) : logs,
+      });
+      throw Exception('FFmpeg processing failed');
+    }
+
+    return File(outPath);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Assembles the ffmpeg command that applies:
+  //   1. colorchannelmixer  — 3×3 channel mix from the combined colour matrix
+  //   2. curves             — additive R/G/B offsets (brightness, warmth, lift)
+  //   3. transpose          — 90° rotation steps
+  //   4. overlay            — transparent PNG of draw strokes + text overlays
+  // ---------------------------------------------------------------------------
+  String _buildFFmpegCommand({
+    required String       inputPath,
+    required String       outputPath,
+    required List<double> matrix,
+    required bool         hasColorEdit,
+    File?                 overlayFile,
+  }) {
+    // Native video pixel dimensions (before rotation).
+    final videoW = _videoController?.value.size.width.round()  ?? 1080;
+    final videoH = _videoController?.value.size.height.round() ?? 1920;
+
+    // Output dimensions swap for 90° / 270° rotations.
+    final outW = (_rotationQuarters % 2 == 1) ? videoH : videoW;
+    final outH = (_rotationQuarters % 2 == 1) ? videoW : videoH;
+
+    final inputs = '-i "$inputPath"'
+        + (overlayFile != null ? ' -i "${overlayFile.path}"' : '');
+
+    // ── Video filter parts for [0:v] ─────────────────────────────────────────
+    final vParts = <String>[];
+
+    if (hasColorEdit) {
+      // colorchannelmixer handles the 3×3 multiplicative part of the matrix.
+      // Flutter ColorFilter.matrix layout (20 elements, row-major):
+      //   R' = m[0]·R + m[1]·G + m[2]·B  + m[4](offset)
+      //   G' = m[5]·R + m[6]·G + m[7]·B  + m[9](offset)
+      //   B' = m[10]·R + m[11]·G + m[12]·B + m[14](offset)
+      vParts.add(
+        'colorchannelmixer='
+        'rr=${_ff(matrix[0])}:rg=${_ff(matrix[1])}:rb=${_ff(matrix[2])}:'
+        'gr=${_ff(matrix[5])}:gg=${_ff(matrix[6])}:gb=${_ff(matrix[7])}:'
+        'br=${_ff(matrix[10])}:bg=${_ff(matrix[11])}:bb=${_ff(matrix[12])}',
+      );
+
+      // curves handles the additive offsets (m[4], m[9], m[14]).
+      // ffmpeg curves: maps input→output in 0–255 space linearly.
+      final offR = matrix[4]; final offG = matrix[9]; final offB = matrix[14];
+      if (offR != 0.0 || offG != 0.0 || offB != 0.0) {
+        final r0 = offR.clamp(0, 255).round();
+        final r1 = (255 + offR).clamp(0, 255).round();
+        final g0 = offG.clamp(0, 255).round();
+        final g1 = (255 + offG).clamp(0, 255).round();
+        final b0 = offB.clamp(0, 255).round();
+        final b1 = (255 + offB).clamp(0, 255).round();
+        vParts.add(
+          "curves=r='0/$r0 255/$r1':g='0/$g0 255/$g1':b='0/$b0 255/$b1'",
+        );
+      }
+    }
+
+    // Rotation: ffmpeg transpose values
+    //   1 = 90° CW,  2 = 90° CCW (= 270° CW),  two 1s = 180°
+    switch (_rotationQuarters) {
+      case 1: vParts.add('transpose=1'); break;
+      case 2: vParts.add('transpose=1,transpose=1'); break;
+      case 3: vParts.add('transpose=2'); break;
+    }
+
+    // ── Assemble ─────────────────────────────────────────────────────────────
+
+    if (overlayFile == null) {
+      // No overlay — simpler -vf path (no filter_complex needed).
+      final vf = vParts.isEmpty ? 'null' : vParts.join(',');
+      return '$inputs '
+          '-vf "$vf" '
+          '-map 0:v -map 0:a? -c:a copy '
+          '-c:v libx264 -preset fast -crf 23 -y "$outputPath"';
+    }
+
+    // With overlay — use filter_complex:
+    //
+    //   [0:v] → colour + rotation → [vid]
+    //   [1:v] → rotate to match video + scale to output size → [ovr]
+    //   [vid][ovr] → overlay (PNG alpha) → [out]
+    //
+    // The overlay PNG was captured while the user was viewing the *already-
+    // rotated* video, so its coordinate space is already in the rotated frame.
+    // We rotate [1:v] by the same amount so both streams share one frame of
+    // reference, then scale the overlay to the final pixel dimensions.
+    final vidFilter = vParts.isNotEmpty ? vParts.join(',') : 'copy';
+    final vidChain  = '[0:v]${vidFilter}[vid]';
+
+    final ovrParts = <String>[];
+    switch (_rotationQuarters) {
+      case 1: ovrParts.add('transpose=1'); break;
+      case 2: ovrParts.add('transpose=1,transpose=1'); break;
+      case 3: ovrParts.add('transpose=2'); break;
+    }
+    ovrParts.add('scale=$outW:$outH');
+    final ovrChain = '[1:v]${ovrParts.join(',')}[ovr]';
+
+    final filterComplex =
+        '$vidChain;$ovrChain;[vid][ovr]overlay=0:0:format=auto[out]';
+
+    return '$inputs '
+        '-filter_complex "$filterComplex" '
+        '-map [out] -map 0:a? -c:a copy '
+        '-c:v libx264 -preset fast -crf 23 -y "$outputPath"';
+  }
+
+  /// 4-decimal-place string for ffmpeg numeric filter parameters.
+  String _ff(double v) => v.toStringAsFixed(4);
+
+  // ---------------------------------------------------------------------------
+  // Renders draw strokes + text overlays (transparent BG) to a PNG file by
+  // capturing the [_overlayKey] RepaintBoundary.
+  // ---------------------------------------------------------------------------
+  Future<File> _captureOverlayPng() async {
+    // Deselect any overlay to avoid baking the selection highlight.
+    if (mounted) setState(() => _selectedOverlayIndex = null);
+    await Future.delayed(const Duration(milliseconds: 80));
+
+    final boundary = _overlayKey.currentContext!.findRenderObject()
+        as RenderRepaintBoundary;
+
+    // pixelRatio 1.0 — ffmpeg will scale to the exact video resolution.
+    final image    = await boundary.toImage(pixelRatio: 1.0);
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+
+    final pngPath = '${Directory.systemTemp.path}'
+        '/overlay_${DateTime.now().millisecondsSinceEpoch}.png';
+    final file = File(pngPath);
+    await file.writeAsBytes(byteData!.buffer.asUint8List());
+    return file;
+  }
 
   // ===========================================================================
   // BUILD
   // ===========================================================================
+
+  List<double> get _currentMatrix =>
+      _adj.combinedMatrix(kFilters[_selectedFilterIndex].matrix);
 
   @override
   Widget build(BuildContext context) {
@@ -505,9 +666,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       ));
       return Scaffold(
         backgroundColor: Colors.black,
-        body: Center(child: Text('Something went wrong.\n${e.toString()}',
-            style: const TextStyle(color: Colors.white, fontSize: 12),
-            textAlign: TextAlign.center)),
+        body: Center(
+          child: Text('Something went wrong.\n${e.toString()}',
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              textAlign: TextAlign.center),
+        ),
       );
     }
   }
@@ -517,8 +680,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final topPad     = MediaQuery.of(context).padding.top;
     final botPad     = MediaQuery.of(context).padding.bottom;
 
-    final videoH = (screenSize.height - topPad - _topBarH - _panelH - botPad)
-        .clamp(120.0, double.infinity);
+    final videoH =
+        (screenSize.height - topPad - _topBarH - _panelH - botPad)
+            .clamp(120.0, double.infinity);
 
     final isTrim       = _activeTool == _Tool.trim;
     final isDrawActive = _activeTool == _Tool.draw;
@@ -529,49 +693,48 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       body: Stack(children: [
         Column(children: [
           SizedBox(height: topPad),
-
-          // ── Top bar ──────────────────────────────────────────────────────
           _buildTopBar(),
 
-          // ── Video area ───────────────────────────────────────────────────
+          // ── Video area ─────────────────────────────────────────────────────
           SizedBox(
             height: videoH,
             child: Stack(children: [
 
-              // IndexedStack keeps both players in the render tree at all times
-              // so the Trimmer's native texture never loses its surface binding.
-              // Index 0 = VideoViewer (Trim tool), Index 1 = preview player.
+              // IndexedStack: index 0 = trimmer VideoViewer, index 1 = preview
               Positioned.fill(
                 child: IndexedStack(
                   index: isTrim ? 0 : 1,
                   children: [
-                    // 0 — Trimmer's VideoViewer
                     Container(
                       color: Colors.black,
                       child: VideoViewer(trimmer: _trimmer),
                     ),
 
-                    // 1 — Filtered + rotated preview player
                     SizedBox.expand(
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: isDrawActive ? null : () {
-                          setState(() => _selectedOverlayIndex = null);
-                          _togglePlayPause();
-                        },
+                        onTap: isDrawActive
+                            ? null
+                            : () {
+                                setState(() => _selectedOverlayIndex = null);
+                                _togglePlayPause();
+                              },
                         child: ColorFiltered(
                           colorFilter: ColorFilter.matrix(_currentMatrix),
                           child: Transform.rotate(
                             angle: _rotationQuarters * 3.14159265 / 2,
-                            child: _isVideoInitialized && _videoController != null
+                            child: _isVideoInitialized &&
+                                    _videoController != null
                                 ? Center(
                                     child: AspectRatio(
-                                      aspectRatio: _videoController!.value.aspectRatio,
+                                      aspectRatio:
+                                          _videoController!.value.aspectRatio,
                                       child: VideoPlayer(_videoController!),
                                     ),
                                   )
                                 : const Center(
-                                    child: CircularProgressIndicator(color: Colors.white)),
+                                    child: CircularProgressIndicator(
+                                        color: Colors.white)),
                           ),
                         ),
                       ),
@@ -580,18 +743,37 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               ),
 
-              // Draw strokes (only on preview) — always rendered, never blocks events
+              // ── Overlay RepaintBoundary ─────────────────────────────────────
+              // Contains draw strokes + text overlays on a transparent
+              // background. Captured by [_captureOverlayPng] and composited
+              // onto the video by ffmpeg when the user taps Next.
+              // The gesture overlay below sits OUTSIDE this boundary so it is
+              // never accidentally baked into the PNG.
               if (!isTrim)
                 Positioned.fill(
-                  child: IgnorePointer(
-                    child: CustomPaint(
-                      painter: DrawingPainter(strokes: _strokes, currentStroke: _currentStroke),
+                  child: RepaintBoundary(
+                    key: _overlayKey,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: CustomPaint(
+                              painter: DrawingPainter(
+                                strokes: _strokes,
+                                currentStroke: _currentStroke,
+                              ),
+                            ),
+                          ),
+                        ),
+                        ..._buildTextOverlays(screenSize.width, videoH),
+                      ],
                     ),
                   ),
                 ),
 
-              // Dedicated draw gesture overlay — sits on top of everything so the
-              // VideoPlayer texture cannot intercept touch events.
+              // ── Draw gesture overlay ────────────────────────────────────────
+              // Lives outside the RepaintBoundary and above the VideoPlayer
+              // Texture so the GPU surface cannot intercept pan events.
               if (!isTrim && isDrawActive)
                 Positioned.fill(
                   child: GestureDetector(
@@ -603,41 +785,42 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                 ),
 
-              // Text overlays (only on preview)
-              if (!isTrim)
-                ..._buildTextOverlays(screenSize.width, videoH),
-
-              // Play/pause icon (preview only, not draw)
               if (!isTrim && !isDrawActive && !_isPlaying)
-                const Center(child: Icon(Icons.play_circle_outline, color: Colors.white54, size: 64)),
+                const Center(
+                  child: Icon(Icons.play_circle_outline,
+                      color: Colors.white54, size: 64)),
 
-              // Draw cursor hint
               if (isDrawActive)
                 Positioned(
                   bottom: 12, left: 0, right: 0,
-                  child: Center(child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.5),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Container(
-                        width:  _drawSize.clamp(6, 24),
-                        height: _drawSize.clamp(6, 24),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle, color: _drawColor,
-                          border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
-                        ),
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.5),
+                        borderRadius: BorderRadius.circular(16),
                       ),
-                      const SizedBox(width: 8),
-                      Text(_drawTool.label,
-                          style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 12)),
-                    ]),
-                  )),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Container(
+                          width:  _drawSize.clamp(6, 24),
+                          height: _drawSize.clamp(6, 24),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle, color: _drawColor,
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.5), width: 1),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(_drawTool.label,
+                            style: TextStyle(
+                                color: Colors.white.withOpacity(0.8),
+                                fontSize: 12)),
+                      ]),
+                    ),
+                  ),
                 ),
 
-              // Trash zone
               if (_isDragging)
                 Positioned(
                   bottom: 0, left: 0, right: 0,
@@ -646,7 +829,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             ]),
           ),
 
-          // ── Single panel ─────────────────────────────────────────────────
           Container(
             height: _panelH,
             color: Colors.black,
@@ -656,12 +838,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           SizedBox(height: botPad),
         ]),
 
-        // ── Text entry overlay ────────────────────────────────────────────
         if (_isTyping)
           Positioned.fill(
             child: TextEntryOverlay(
               controller: _textCtrl, focusNode: _textFocus,
-              textColor: _tColor, fontSize: _tSize, isBold: _tBold, fontIndex: _tFont,
+              textColor: _tColor, fontSize: _tSize,
+              isBold: _tBold, fontIndex: _tFont,
               onColorChanged: (c) => setState(() => _tColor = c),
               onSizeChanged:  (v) => setState(() => _tSize  = v),
               onBoldToggle:   ()  => setState(() => _tBold  = !_tBold),
@@ -692,21 +874,33 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             },
             child: const Padding(
               padding: EdgeInsets.all(8),
-              child: Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+              child: Icon(Icons.arrow_back_ios_new,
+                  color: Colors.white, size: 20),
             ),
           ),
           const Text('Edit Video',
-              style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600)),
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600)),
           GestureDetector(
             onTap: _isSavingTrim ? null : _onNext,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+              decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20)),
               child: _isSavingTrim
-                  ? const SizedBox(width: 18, height: 18,
-                      child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2))
+                  ? const SizedBox(
+                      width: 18, height: 18,
+                      child: CircularProgressIndicator(
+                          color: Colors.black, strokeWidth: 2))
                   : const Text('Next',
-                      style: TextStyle(color: Colors.black, fontSize: 14, fontWeight: FontWeight.w700)),
+                      style: TextStyle(
+                          color: Colors.black,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700)),
             ),
           ),
         ],
@@ -715,19 +909,21 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   );
 
   // ===========================================================================
-  // SINGLE PANEL
+  // PANEL
   // ===========================================================================
 
   Widget _buildPanel() {
     return Column(children: [
-      // ── Tool icon row ─────────────────────────────────────────────────────
       SizedBox(
         height: 86,
         child: ListView(
           scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          children: _Tool.values.where((t) => !(t == _Tool.trim && _trimApplied)).map((tool) {
-            final isActive = _activeTool == tool;
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          children: _Tool.values
+              .where((t) => !(t == _Tool.trim && _trimApplied))
+              .map((tool) {
+            final isActive  = _activeTool == tool;
             final showBadge = tool == _Tool.trim && _trimApplied && !isActive;
 
             return GestureDetector(
@@ -764,7 +960,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           width: 8, height: 8,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle, color: Colors.white,
-                            border: Border.all(color: Colors.black.withOpacity(0.4), width: 1),
+                            border: Border.all(
+                                color: Colors.black.withOpacity(0.4),
+                                width: 1),
                           ),
                         ),
                       ),
@@ -772,9 +970,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   const SizedBox(height: 5),
                   Text(_toolLabel(tool),
                       style: TextStyle(
-                        color: isActive ? Colors.white : Colors.white.withOpacity(0.48),
+                        color: isActive
+                            ? Colors.white
+                            : Colors.white.withOpacity(0.48),
                         fontSize: 10,
-                        fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+                        fontWeight: isActive
+                            ? FontWeight.w600
+                            : FontWeight.normal,
                       )),
                 ]),
               ),
@@ -783,34 +985,31 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         ),
       ),
 
-      // Divider
       Divider(color: Colors.white.withOpacity(0.07), height: 1),
-
-      // ── Detail area for selected tool ─────────────────────────────────────
       Expanded(child: _buildToolDetail()),
     ]);
   }
 
   Widget _buildToolDetail() {
     switch (_activeTool) {
-      // ── Trim + Audio ──────────────────────────────────────────────────────
       case _Tool.trim:
         return _buildTrimDetail();
-
       case _Tool.filters:
         return FilterStrip(
-          selectedIndex: _selectedFilterIndex, previewImage: null,
+          selectedIndex: _selectedFilterIndex,
+          previewImage: null,
           onSelect: (i) => setState(() => _selectedFilterIndex = i),
         );
       case _Tool.adjust:
         return AdjustPanel(
           adjustments: _adj,
-          onChanged:   (a) => setState(() => _adj = a),
+          onChanged: (a) => setState(() => _adj = a),
         );
       case _Tool.draw:
         return DrawPanel(
           tool: _drawTool, color: _drawColor, strokeWidth: _drawSize,
-          onUndo:         () => setState(() { if (_strokes.isNotEmpty) _strokes.removeLast(); }),
+          onUndo: () =>
+              setState(() { if (_strokes.isNotEmpty) _strokes.removeLast(); }),
           onClear:        () => setState(() => _strokes.clear()),
           onToolChanged:  (t) => setState(() => _drawTool  = t),
           onColorChanged: (c) => setState(() => _drawColor = c),
@@ -819,12 +1018,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       default:
         return Center(
           child: Text('Select a tool above',
-              style: TextStyle(color: Colors.white.withOpacity(0.22), fontSize: 13)),
+              style: TextStyle(
+                  color: Colors.white.withOpacity(0.22), fontSize: 13)),
         );
     }
   }
-
-  // ── Trim + Audio detail ───────────────────────────────────────────────────
 
   Widget _buildTrimDetail() {
     return SingleChildScrollView(
@@ -837,13 +1035,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             viewerWidth:    MediaQuery.of(context).size.width - 16,
             maxVideoLength: const Duration(seconds: 60),
             editorProperties: TrimEditorProperties(
-              circleSize:       12,
-              borderWidth:       4,
-              scrubberWidth:     2,
-              sideTapSize:      24,
-              circlePaintColor:  Colors.white,
-              borderPaintColor:  Colors.white,
-              scrubberPaintColor: Colors.white,
+              circleSize:          12,
+              borderWidth:          4,
+              scrubberWidth:        2,
+              sideTapSize:         24,
+              circlePaintColor:    Colors.white,
+              borderPaintColor:    Colors.white,
+              scrubberPaintColor:  Colors.white,
             ),
             onChangeStart: (v) { _startValue = v; _trimDirty = true; },
             onChangeEnd:   (v) { _endValue   = v; _trimDirty = true; },
@@ -853,7 +1051,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           ),
         ),
 
-        // Play/pause + Save row
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Row(
@@ -863,8 +1060,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 onTap: () async {
                   try {
                     final p = await _trimmer.videoPlaybackControl(
-                      startValue: _startValue, endValue: _endValue,
-                    );
+                        startValue: _startValue, endValue: _endValue);
                     if (mounted) setState(() => _isTrimPlaying = p);
                   } catch (_) {}
                 },
@@ -873,10 +1069,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: Colors.white.withOpacity(0.1),
-                    border: Border.all(color: Colors.white.withOpacity(0.28), width: 1),
+                    border: Border.all(
+                        color: Colors.white.withOpacity(0.28), width: 1),
                   ),
                   child: Icon(
-                    _isTrimPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    _isTrimPlaying
+                        ? Icons.pause_rounded
+                        : Icons.play_arrow_rounded,
                     color: Colors.white, size: 15,
                   ),
                 ),
@@ -886,7 +1085,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 onTap: (_trimDirty && !_isSavingTrimInline) ? _saveTrim : null,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
-                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 22, vertical: 8),
                   decoration: BoxDecoration(
                     color: _trimDirty
                         ? Colors.white
@@ -898,16 +1098,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           width: 14, height: 14,
                           child: CircularProgressIndicator(
                               color: Colors.black, strokeWidth: 2))
-                      : Text(
-                          'Save',
+                      : Text('Save',
                           style: TextStyle(
                             color: _trimDirty
                                 ? Colors.black
                                 : Colors.white.withOpacity(0.3),
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
-                          ),
-                        ),
+                          )),
                 ),
               ),
             ],
@@ -923,15 +1121,17 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   List<Widget> _buildTextOverlays(double w, double h) {
     return _overlays.asMap().entries.map((entry) {
-      final index = entry.key;
-      final o     = entry.value;
+      final index        = entry.key;
+      final o            = entry.value;
       final draggingThis = _dragIndex == index;
-      final isDraw = _activeTool == _Tool.draw;
+      final isDraw       = _activeTool == _Tool.draw;
       return Positioned(
         left: (o.position.dx * w).clamp(0.0, w - 10),
         top:  (o.position.dy * h).clamp(0.0, h - 10),
         child: GestureDetector(
-          onTap:       isDraw ? null : () => setState(() => _selectedOverlayIndex = index),
+          onTap: isDraw
+              ? null
+              : () => setState(() => _selectedOverlayIndex = index),
           onPanStart:  isDraw ? null : (_) => _onTextDragStart(index),
           onPanUpdate: isDraw ? null : (d) => _onTextDragUpdate(index, d, w, h),
           onPanEnd:    isDraw ? null : (_) => _onTextDragEnd(index, h),
