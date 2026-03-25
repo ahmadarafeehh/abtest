@@ -14,6 +14,32 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:video_player/video_player.dart';
+import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
+import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
+
+// Identity matrix — passthrough when no filter/adjust is applied.
+const List<double> _kIdentityMatrix = [
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+];
 
 class AddPostScreen extends StatefulWidget {
   final VoidCallback? onPostUploaded;
@@ -26,11 +52,17 @@ class AddPostScreen extends StatefulWidget {
   /// When provided the screen goes straight to caption + upload.
   final File? initialVideoFile;
 
+  /// Full edit state from VideoEditScreen — filters, adjustments,
+  /// draw strokes, and text overlays are re-applied as widget layers
+  /// on the preview so what the user saw in the editor is preserved here.
+  final VideoEditResult? editResult;
+
   const AddPostScreen({
     Key? key,
     this.onPostUploaded,
     this.initialFile,
     this.initialVideoFile,
+    this.editResult,
   }) : super(key: key);
 
   @override
@@ -456,7 +488,11 @@ class _AddPostScreenState extends State<AddPostScreen>
 
     // Pause video before uploading
     await _videoController?.pause();
-    if (mounted) setState(() { isLoading = true; _isPlaying = false; });
+    if (mounted)
+      setState(() {
+        isLoading = true;
+        _isPlaying = false;
+      });
 
     try {
       final String res;
@@ -514,6 +550,18 @@ class _AddPostScreenState extends State<AddPostScreen>
       isLoading = false;
       _descriptionController.clear();
     });
+  }
+
+  // ===========================================================================
+  // HELPERS — edit-state matrix
+  // ===========================================================================
+
+  /// Returns the combined color matrix from the edit result, or the identity
+  /// matrix if no edit result was passed (e.g. video picked directly from gallery).
+  List<double> get _colorMatrix {
+    final r = widget.editResult;
+    if (r == null) return _kIdentityMatrix;
+    return r.adjustments.combinedMatrix(kFilters[r.filterIndex].matrix);
   }
 
   // ===========================================================================
@@ -600,43 +648,97 @@ class _AddPostScreenState extends State<AddPostScreen>
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Video preview — re-applies all VideoEditScreen layers as widgets so the
+  // user sees exactly what they edited before they post.
+  // ---------------------------------------------------------------------------
   Widget _buildVideoPreview() {
     return GestureDetector(
       onTap: _toggleVideoPlayback,
       child: Container(
         height: MediaQuery.of(context).size.height * 0.5,
         color: Colors.black,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            if (_isVideoInitialized && _videoController != null)
-              Center(
-                child: AspectRatio(
-                  aspectRatio: _videoController!.value.aspectRatio,
-                  child: VideoPlayer(_videoController!),
-                ),
-              )
-            else
-              const CircularProgressIndicator(color: Colors.white),
-            // Play/pause overlay icon
-            if (_isVideoInitialized && !_isPlaying)
-              Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.black.withOpacity(0.45),
-                ),
-                child: const Icon(
-                  Icons.play_arrow_rounded,
-                  color: Colors.white,
-                  size: 40,
-                ),
-              ),
-          ],
+        // LayoutBuilder gives us the real pixel size so fractional overlay
+        // positions can be converted to exact offsets.
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final double w = constraints.maxWidth;
+            final double h = constraints.maxHeight;
+            final VideoEditResult? er = widget.editResult;
+
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                // ── 1. Video + color filter ─────────────────────────────────
+                if (_isVideoInitialized && _videoController != null)
+                  ColorFiltered(
+                    colorFilter: ColorFilter.matrix(_colorMatrix),
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: _videoController!.value.aspectRatio,
+                        child: VideoPlayer(_videoController!),
+                      ),
+                    ),
+                  )
+                else
+                  const CircularProgressIndicator(color: Colors.white),
+
+                // ── 2. Draw strokes ──────────────────────────────────────────
+                if (er != null && er.strokes.isNotEmpty)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: DrawingPainter(
+                          strokes: er.strokes,
+                          currentStroke: null,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // ── 3. Text overlays ─────────────────────────────────────────
+                if (er != null) ..._buildTextOverlays(er, w, h),
+
+                // ── 4. Play/pause icon ───────────────────────────────────────
+                if (_isVideoInitialized && !_isPlaying)
+                  IgnorePointer(
+                    child: Container(
+                      width: 64,
+                      height: 64,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.black.withOpacity(0.45),
+                      ),
+                      child: const Icon(
+                        Icons.play_arrow_rounded,
+                        color: Colors.white,
+                        size: 40,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
         ),
       ),
     );
+  }
+
+  /// Converts fractional overlay positions (0.0–1.0) into Positioned widgets,
+  /// matching exactly how VideoEditScreen displayed them.
+  List<Widget> _buildTextOverlays(VideoEditResult er, double w, double h) {
+    return er.overlays.map((o) {
+      return Positioned(
+        left: (o.position.dx * w).clamp(0.0, w - 10),
+        top: (o.position.dy * h).clamp(0.0, h - 10),
+        child: IgnorePointer(
+          child: Stack(clipBehavior: Clip.none, children: [
+            Text(o.text, style: overlayShadowStyle(o)),
+            Text(o.text, style: overlayTextStyle(o)),
+          ]),
+        ),
+      );
+    }).toList();
   }
 
   @override
@@ -693,8 +795,7 @@ class _AddPostScreenState extends State<AddPostScreen>
                       ),
                       child: Image.memory(_file!, fit: BoxFit.cover),
                     ),
-                  if (_isVideo && _videoFile != null)
-                    _buildVideoPreview(),
+                  if (_isVideo && _videoFile != null) _buildVideoPreview(),
                   Padding(
                     padding: const EdgeInsets.all(12.0),
                     child: _buildCaptionInput(user),
