@@ -1,14 +1,10 @@
 // lib/screens/Profile_page/video_edit_screen.dart
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:video_player/video_player.dart';
 import 'package:video_trimmer/video_trimmer.dart';
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:Ratedly/screens/Profile_page/add_post_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
@@ -55,8 +51,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   EditAdjustments _adj = const EditAdjustments();
 
   // ── Draw ───────────────────────────────────────────────────────────────────
-  /// RepaintBoundary key wrapping draw strokes + text overlays.
-  /// Captured as a PNG in [_captureOverlayPng] and baked into the output via ffmpeg.
   final GlobalKey _overlayKey = GlobalKey();
   final List<DrawStroke> _strokes = [];
   DrawStroke? _currentStroke;
@@ -458,7 +452,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   // ===========================================================================
-  // NEXT — bake all edits into the video file, then navigate
+  // NEXT
   // ===========================================================================
 
   Future<void> _onNext() async {
@@ -470,231 +464,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     await _silenceAndStop();
     if (!mounted) return;
 
-    // Reuse the Next-button spinner while baking.
-    setState(() => _isSavingTrim = true);
-
-    try {
-      final outputFile = await _bakeEdits();
-      if (!mounted) return;
-      Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => AddPostScreen(
-              initialVideoFile: outputFile,
-              onPostUploaded: widget.onPostUploaded,
-            ),
-          ));
-    } catch (e, st) {
-      await _log(
-          operation: 'bake/error',
-          errorMessage: e.toString(),
-          stackTrace: st.toString());
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Failed to process video. Please try again.')));
-      }
-    } finally {
-      if (mounted) setState(() => _isSavingTrim = false);
-    }
-  }
-
-  // ===========================================================================
-  // BAKE EDITS
-  // Writes draw strokes / text / rotation / colour filter into the video file
-  // using a single ffmpeg pass.
-  // ===========================================================================
-
-  Future<File> _bakeEdits() async {
-    final matrix = _adj.combinedMatrix(kFilters[_selectedFilterIndex].matrix);
-    final hasColorEdit = _selectedFilterIndex != 0 || !_adj.isIdentity;
-    final hasRotation = _rotationQuarters != 0;
-    final hasOverlay = _strokes.isNotEmpty || _overlays.isNotEmpty;
-
-    // Nothing to bake — hand the trimmed file straight to AddPostScreen.
-    if (!hasColorEdit && !hasRotation && !hasOverlay) return _activeVideoFile;
-
-    // Capture the draw+text layer as a transparent PNG.
-    File? overlayFile;
-    if (hasOverlay) overlayFile = await _captureOverlayPng();
-
-    final outPath = '${Directory.systemTemp.path}'
-        '/baked_${DateTime.now().millisecondsSinceEpoch}.mp4';
-
-    final cmd = _buildFFmpegCommand(
-      inputPath: _activeVideoFile.path,
-      outputPath: outPath,
-      matrix: matrix,
-      hasColorEdit: hasColorEdit,
-      overlayFile: overlayFile,
-    );
-
-    await _log(operation: 'bake/ffmpeg_start', data: {'cmd': cmd});
-
-    final session = await FFmpegKit.execute(cmd);
-    final returnCode = await session.getReturnCode();
-
-    // Always delete the temp PNG.
-    try {
-      overlayFile?.deleteSync();
-    } catch (_) {}
-
-    if (!ReturnCode.isSuccess(returnCode)) {
-      final logs = await session.getAllLogsAsString() ?? '';
-      await _log(operation: 'bake/ffmpeg_error', data: {
-        'logs': logs.length > 2000 ? logs.substring(0, 2000) : logs,
-      });
-      throw Exception('FFmpeg processing failed');
-    }
-
-    return File(outPath);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Assembles the ffmpeg command that applies:
-  //   1. colorchannelmixer  — 3×3 channel mix from the combined colour matrix
-  //   2. curves             — additive R/G/B offsets (brightness, warmth, lift)
-  //   3. transpose          — 90° rotation steps
-  //   4. overlay            — transparent PNG of draw strokes + text overlays
-  // ---------------------------------------------------------------------------
-  String _buildFFmpegCommand({
-    required String inputPath,
-    required String outputPath,
-    required List<double> matrix,
-    required bool hasColorEdit,
-    File? overlayFile,
-  }) {
-    // Native video pixel dimensions (before rotation).
-    final videoW = _videoController?.value.size.width.round() ?? 1080;
-    final videoH = _videoController?.value.size.height.round() ?? 1920;
-
-    // Output dimensions swap for 90° / 270° rotations.
-    final outW = (_rotationQuarters % 2 == 1) ? videoH : videoW;
-    final outH = (_rotationQuarters % 2 == 1) ? videoW : videoH;
-
-    final inputs = '-i "$inputPath"' +
-        (overlayFile != null ? ' -i "${overlayFile.path}"' : '');
-
-    // ── Video filter parts for [0:v] ─────────────────────────────────────────
-    final vParts = <String>[];
-
-    if (hasColorEdit) {
-      // colorchannelmixer handles the 3×3 multiplicative part of the matrix.
-      // Flutter ColorFilter.matrix layout (20 elements, row-major):
-      //   R' = m[0]·R + m[1]·G + m[2]·B  + m[4](offset)
-      //   G' = m[5]·R + m[6]·G + m[7]·B  + m[9](offset)
-      //   B' = m[10]·R + m[11]·G + m[12]·B + m[14](offset)
-      vParts.add(
-        'colorchannelmixer='
-        'rr=${_ff(matrix[0])}:rg=${_ff(matrix[1])}:rb=${_ff(matrix[2])}:'
-        'gr=${_ff(matrix[5])}:gg=${_ff(matrix[6])}:gb=${_ff(matrix[7])}:'
-        'br=${_ff(matrix[10])}:bg=${_ff(matrix[11])}:bb=${_ff(matrix[12])}',
-      );
-
-      // curves handles the additive offsets (m[4], m[9], m[14]).
-      // ffmpeg curves: maps input→output in 0–255 space linearly.
-      final offR = matrix[4];
-      final offG = matrix[9];
-      final offB = matrix[14];
-      if (offR != 0.0 || offG != 0.0 || offB != 0.0) {
-        final r0 = offR.clamp(0, 255).round();
-        final r1 = (255 + offR).clamp(0, 255).round();
-        final g0 = offG.clamp(0, 255).round();
-        final g1 = (255 + offG).clamp(0, 255).round();
-        final b0 = offB.clamp(0, 255).round();
-        final b1 = (255 + offB).clamp(0, 255).round();
-        vParts.add(
-          "curves=r='0/$r0 255/$r1':g='0/$g0 255/$g1':b='0/$b0 255/$b1'",
-        );
-      }
-    }
-
-    // Rotation: ffmpeg transpose values
-    //   1 = 90° CW,  2 = 90° CCW (= 270° CW),  two 1s = 180°
-    switch (_rotationQuarters) {
-      case 1:
-        vParts.add('transpose=1');
-        break;
-      case 2:
-        vParts.add('transpose=1,transpose=1');
-        break;
-      case 3:
-        vParts.add('transpose=2');
-        break;
-    }
-
-    // ── Assemble ─────────────────────────────────────────────────────────────
-
-    if (overlayFile == null) {
-      // No overlay — simpler -vf path (no filter_complex needed).
-      final vf = vParts.isEmpty ? 'null' : vParts.join(',');
-      return '$inputs '
-          '-vf "$vf" '
-          '-map 0:v -map 0:a? -c:a copy '
-          '-c:v libx264 -preset fast -crf 23 -y "$outputPath"';
-    }
-
-    // With overlay — use filter_complex:
-    //
-    //   [0:v] → colour + rotation → [vid]
-    //   [1:v] → rotate to match video + scale to output size → [ovr]
-    //   [vid][ovr] → overlay (PNG alpha) → [out]
-    //
-    // The overlay PNG was captured while the user was viewing the *already-
-    // rotated* video, so its coordinate space is already in the rotated frame.
-    // We rotate [1:v] by the same amount so both streams share one frame of
-    // reference, then scale the overlay to the final pixel dimensions.
-    final vidFilter = vParts.isNotEmpty ? vParts.join(',') : 'copy';
-    final vidChain = '[0:v]${vidFilter}[vid]';
-
-    final ovrParts = <String>[];
-    switch (_rotationQuarters) {
-      case 1:
-        ovrParts.add('transpose=1');
-        break;
-      case 2:
-        ovrParts.add('transpose=1,transpose=1');
-        break;
-      case 3:
-        ovrParts.add('transpose=2');
-        break;
-    }
-    ovrParts.add('scale=$outW:$outH');
-    final ovrChain = '[1:v]${ovrParts.join(',')}[ovr]';
-
-    final filterComplex =
-        '$vidChain;$ovrChain;[vid][ovr]overlay=0:0:format=auto[out]';
-
-    return '$inputs '
-        '-filter_complex "$filterComplex" '
-        '-map [out] -map 0:a? -c:a copy '
-        '-c:v libx264 -preset fast -crf 23 -y "$outputPath"';
-  }
-
-  /// 4-decimal-place string for ffmpeg numeric filter parameters.
-  String _ff(double v) => v.toStringAsFixed(4);
-
-  // ---------------------------------------------------------------------------
-  // Renders draw strokes + text overlays (transparent BG) to a PNG file by
-  // capturing the [_overlayKey] RepaintBoundary.
-  // ---------------------------------------------------------------------------
-  Future<File> _captureOverlayPng() async {
-    // Deselect any overlay to avoid baking the selection highlight.
-    if (mounted) setState(() => _selectedOverlayIndex = null);
-    await Future.delayed(const Duration(milliseconds: 80));
-
-    final boundary =
-        _overlayKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
-
-    // pixelRatio 1.0 — ffmpeg will scale to the exact video resolution.
-    final image = await boundary.toImage(pixelRatio: 1.0);
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
-
-    final pngPath = '${Directory.systemTemp.path}'
-        '/overlay_${DateTime.now().millisecondsSinceEpoch}.png';
-    final file = File(pngPath);
-    await file.writeAsBytes(byteData!.buffer.asUint8List());
-    return file;
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => AddPostScreen(
+            initialVideoFile: _activeVideoFile,
+            onPostUploaded: widget.onPostUploaded,
+          ),
+        ));
   }
 
   // ===========================================================================
@@ -790,12 +567,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               ),
 
-              // ── Overlay RepaintBoundary ─────────────────────────────────────
-              // Contains draw strokes + text overlays on a transparent
-              // background. Captured by [_captureOverlayPng] and composited
-              // onto the video by ffmpeg when the user taps Next.
-              // The gesture overlay below sits OUTSIDE this boundary so it is
-              // never accidentally baked into the PNG.
+              // ── Overlay (draw strokes + text) ───────────────────────────────
               if (!isTrim)
                 Positioned.fill(
                   child: RepaintBoundary(
@@ -819,8 +591,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
 
               // ── Draw gesture overlay ────────────────────────────────────────
-              // Lives outside the RepaintBoundary and above the VideoPlayer
-              // Texture so the GPU surface cannot intercept pan events.
               if (!isTrim && isDrawActive)
                 Positioned.fill(
                   child: GestureDetector(
