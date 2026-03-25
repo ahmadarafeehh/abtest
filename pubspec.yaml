@@ -38,7 +38,7 @@ dependencies:
   permission_handler: ^11.0.0
   camera: ^0.10.5+9
   photo_manager: ^3.3.0
-  ffmpeg_kit_flutter: ^6.0.3
+  ffmpeg_kit_flutter_new: ^4.1.0
 
 
 dev_dependencies:
