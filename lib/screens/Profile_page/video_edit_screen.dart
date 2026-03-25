@@ -7,8 +7,8 @@ import 'package:flutter/rendering.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:video_player/video_player.dart';
 import 'package:video_trimmer/video_trimmer.dart';
-import 'package:ffmpeg_kit_flutter/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter/return_code.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:Ratedly/screens/Profile_page/add_post_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
@@ -32,26 +32,26 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // ── Preview player ─────────────────────────────────────────────────────────
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
-  bool _isPlaying          = false;
+  bool _isPlaying = false;
 
   // ── Active video file ──────────────────────────────────────────────────────
   late File _activeVideoFile;
 
   // ── Trimmer ────────────────────────────────────────────────────────────────
-  final Trimmer _trimmer       = Trimmer();
-  double _startValue           = 0.0;
-  double _endValue             = 0.0;
-  bool   _isTrimPlaying        = false;
-  bool   _isSavingTrim         = false;
-  bool   _isSavingTrimInline   = false;
-  bool   _trimDirty            = false;
-  bool   _trimApplied          = false;
+  final Trimmer _trimmer = Trimmer();
+  double _startValue = 0.0;
+  double _endValue = 0.0;
+  bool _isTrimPlaying = false;
+  bool _isSavingTrim = false;
+  bool _isSavingTrimInline = false;
+  bool _trimDirty = false;
+  bool _trimApplied = false;
 
   // ── Active tool ────────────────────────────────────────────────────────────
   _Tool _activeTool = _Tool.trim;
 
   // ── Filter / Adjust ────────────────────────────────────────────────────────
-  int             _selectedFilterIndex = 0;
+  int _selectedFilterIndex = 0;
   EditAdjustments _adj = const EditAdjustments();
 
   // ── Draw ───────────────────────────────────────────────────────────────────
@@ -60,33 +60,33 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   final GlobalKey _overlayKey = GlobalKey();
   final List<DrawStroke> _strokes = [];
   DrawStroke? _currentStroke;
-  DrawTool _drawTool  = DrawTool.brush;
-  Color    _drawColor = Colors.white;
-  double   _drawSize  = 8.0;
-  bool     _isDrawing = false;
+  DrawTool _drawTool = DrawTool.brush;
+  Color _drawColor = Colors.white;
+  double _drawSize = 8.0;
+  bool _isDrawing = false;
 
   // ── Text overlays ──────────────────────────────────────────────────────────
   bool _isTyping = false;
   final List<TextOverlay> _overlays = [];
   int? _selectedOverlayIndex;
-  final TextEditingController _textCtrl  = TextEditingController();
-  final FocusNode             _textFocus = FocusNode();
-  Color  _tColor = Colors.white;
-  double _tSize  = 32.0;
-  bool   _tBold  = true;
-  int    _tFont  = 0;
+  final TextEditingController _textCtrl = TextEditingController();
+  final FocusNode _textFocus = FocusNode();
+  Color _tColor = Colors.white;
+  double _tSize = 32.0;
+  bool _tBold = true;
+  int _tFont = 0;
 
   // ── Rotation ───────────────────────────────────────────────────────────────
   int _rotationQuarters = 0;
 
   // ── Drag-to-trash ──────────────────────────────────────────────────────────
-  bool _isDragging  = false;
+  bool _isDragging = false;
   int? _dragIndex;
   bool _isOverTrash = false;
 
   // ── Layout ─────────────────────────────────────────────────────────────────
-  static const double _topBarH  = 56.0;
-  static const double _panelH   = 212.0;
+  static const double _topBarH = 56.0;
+  static const double _panelH = 212.0;
 
   // ===========================================================================
   // LIFECYCLE
@@ -118,11 +118,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       final videoH = sz.height - tp - _topBarH - _panelH - bp;
       final fileExists = widget.videoFile.existsSync();
       await Supabase.instance.client.from('posts_errors').insert({
-        'operation_type':  'video_edit/boot',
+        'operation_type': 'video_edit/boot',
         'additional_data': {
-          'screenW': sz.width, 'screenH': sz.height,
-          'topPad': tp, 'botPad': bp,
-          'computedVideoH': videoH, 'videoHNegative': videoH <= 0,
+          'screenW': sz.width,
+          'screenH': sz.height,
+          'topPad': tp,
+          'botPad': bp,
+          'computedVideoH': videoH,
+          'videoHNegative': videoH <= 0,
           'filePath': widget.videoFile.path,
           'fileExists': fileExists,
           'fileSizeBytes': fileExists ? widget.videoFile.lengthSync() : 0,
@@ -141,15 +144,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       await c.setLooping(true);
       if (mounted) {
         setState(() {
-          _videoController    = c;
+          _videoController = c;
           _isVideoInitialized = true;
-          _isPlaying          = false;
+          _isPlaying = false;
         });
       }
     } catch (e, st) {
       await _log(
         operation: 'video_edit/player_init_error',
-        errorMessage: e.toString(), stackTrace: st.toString(),
+        errorMessage: e.toString(),
+        stackTrace: st.toString(),
         data: {'filePath': widget.videoFile.path},
       );
     }
@@ -165,13 +169,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   Future<void> _onToolTap(_Tool tool) async {
-    if (tool == _Tool.text) { _enterTextMode(); return; }
+    if (tool == _Tool.text) {
+      _enterTextMode();
+      return;
+    }
     if (tool == _Tool.rotate) {
       setState(() => _rotationQuarters = (_rotationQuarters + 1) % 4);
       return;
     }
 
-    final wasTrim   = _activeTool == _Tool.trim;
+    final wasTrim = _activeTool == _Tool.trim;
     final goingTrim = tool == _Tool.trim;
 
     if (goingTrim && !wasTrim) {
@@ -243,7 +250,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       final completer = Completer<String?>();
       await _trimmer.saveTrimmedVideo(
         startValue: _startValue,
-        endValue:   _endValue,
+        endValue: _endValue,
         onSave: (String? path) {
           if (!completer.isCompleted) completer.complete(path);
         },
@@ -252,18 +259,21 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           .timeout(const Duration(seconds: 30), onTimeout: () => null);
 
       if (savedPath != null) {
-        final f      = File(savedPath);
+        final f = File(savedPath);
         final exists = f.existsSync();
-        final bytes  = exists ? f.lengthSync() : 0;
+        final bytes = exists ? f.lengthSync() : 0;
         await _log(operation: 'trim/saved_inline', data: {
-          'savedPath': savedPath, 'exists': exists, 'sizeBytes': bytes,
+          'savedPath': savedPath,
+          'exists': exists,
+          'sizeBytes': bytes,
         });
         if (exists && bytes > 0) trimmedFile = f;
       }
     } catch (e, st) {
       await _log(
           operation: 'trim/save_inline_error',
-          errorMessage: e.toString(), stackTrace: st.toString());
+          errorMessage: e.toString(),
+          stackTrace: st.toString());
     }
 
     if (!mounted) return;
@@ -271,7 +281,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (trimmedFile != null) {
       setState(() => _activeVideoFile = trimmedFile!);
       final old = _videoController;
-      setState(() { _isVideoInitialized = false; _isPlaying = false; });
+      setState(() {
+        _isVideoInitialized = false;
+        _isPlaying = false;
+      });
       old?.dispose();
 
       try {
@@ -283,14 +296,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         await c.setLooping(true);
         if (mounted) {
           setState(() {
-            _videoController    = c;
+            _videoController = c;
             _isVideoInitialized = true;
-            _isPlaying          = false;
-            _trimDirty          = false;
-            _trimApplied        = true;
-            _startValue         = 0.0;
-            _endValue           = 0.0;
-            _activeTool         = _Tool.filters;
+            _isPlaying = false;
+            _trimDirty = false;
+            _trimApplied = true;
+            _startValue = 0.0;
+            _endValue = 0.0;
+            _activeTool = _Tool.filters;
           });
           _trimmer.loadVideo(videoFile: trimmedFile);
           c.play();
@@ -299,7 +312,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       } catch (e, st) {
         await _log(
             operation: 'trim/reinit_error',
-            errorMessage: e.toString(), stackTrace: st.toString());
+            errorMessage: e.toString(),
+            stackTrace: st.toString());
       }
     }
 
@@ -312,7 +326,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   void _onDrawStart(DragStartDetails d) {
     setState(() {
-      _isDrawing     = true;
+      _isDrawing = true;
       _currentStroke = DrawStroke(
         points: [d.localPosition],
         color: _drawColor,
@@ -339,7 +353,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       setState(() {
         _strokes.add(_currentStroke!);
         _currentStroke = null;
-        _isDrawing     = false;
+        _isDrawing = false;
       });
     }
   }
@@ -352,7 +366,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     _textCtrl.clear();
     setState(() {
       _isTyping = true;
-      _tColor = Colors.white; _tSize = 32.0; _tBold = true; _tFont = 0;
+      _tColor = Colors.white;
+      _tSize = 32.0;
+      _tBold = true;
+      _tFont = 0;
     });
     Future.delayed(const Duration(milliseconds: 80), () {
       if (mounted) _textFocus.requestFocus();
@@ -363,16 +380,22 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     final text = _textCtrl.text.trim();
     if (text.isNotEmpty) {
       setState(() => _overlays.add(TextOverlay(
-        text: text, position: const Offset(0.5, 0.45),
-        color: _tColor, fontSize: _tSize, isBold: _tBold, fontIndex: _tFont,
-      )));
+            text: text,
+            position: const Offset(0.5, 0.45),
+            color: _tColor,
+            fontSize: _tSize,
+            isBold: _tBold,
+            fontIndex: _tFont,
+          )));
     }
-    _textCtrl.clear(); _textFocus.unfocus();
+    _textCtrl.clear();
+    _textFocus.unfocus();
     setState(() => _isTyping = false);
   }
 
   void _cancelText() {
-    _textCtrl.clear(); _textFocus.unfocus();
+    _textCtrl.clear();
+    _textFocus.unfocus();
     setState(() => _isTyping = false);
   }
 
@@ -383,9 +406,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _overTrash(Offset pos, double h) => pos.dy * h >= h - kTrashZoneH;
 
   void _onTextDragStart(int i) => setState(() {
-    _isDragging = true; _dragIndex = i;
-    _selectedOverlayIndex = i; _isOverTrash = false;
-  });
+        _isDragging = true;
+        _dragIndex = i;
+        _selectedOverlayIndex = i;
+        _isOverTrash = false;
+      });
 
   void _onTextDragUpdate(int i, DragUpdateDetails d, double w, double h) {
     final o = _overlays[i];
@@ -402,8 +427,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   void _onTextDragEnd(int i, double h) {
     final del = _overTrash(_overlays[i].position, h);
     setState(() {
-      _isDragging = false; _dragIndex = null; _isOverTrash = false;
-      if (del) { _overlays.removeAt(i); _selectedOverlayIndex = null; }
+      _isDragging = false;
+      _dragIndex = null;
+      _isOverTrash = false;
+      if (del) {
+        _overlays.removeAt(i);
+        _selectedOverlayIndex = null;
+      }
     });
   }
 
@@ -419,9 +449,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }) async {
     try {
       await Supabase.instance.client.from('posts_errors').insert({
-        'operation_type':  operation,
-        'error_message':   errorMessage,
-        'stack_trace':     stackTrace,
+        'operation_type': operation,
+        'error_message': errorMessage,
+        'stack_trace': stackTrace,
         'additional_data': data,
       });
     } catch (_) {}
@@ -446,16 +476,19 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     try {
       final outputFile = await _bakeEdits();
       if (!mounted) return;
-      Navigator.push(context, MaterialPageRoute(
-        builder: (_) => AddPostScreen(
-          initialVideoFile: outputFile,
-          onPostUploaded:   widget.onPostUploaded,
-        ),
-      ));
+      Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AddPostScreen(
+              initialVideoFile: outputFile,
+              onPostUploaded: widget.onPostUploaded,
+            ),
+          ));
     } catch (e, st) {
       await _log(
           operation: 'bake/error',
-          errorMessage: e.toString(), stackTrace: st.toString());
+          errorMessage: e.toString(),
+          stackTrace: st.toString());
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text('Failed to process video. Please try again.')));
@@ -472,10 +505,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // ===========================================================================
 
   Future<File> _bakeEdits() async {
-    final matrix       = _adj.combinedMatrix(kFilters[_selectedFilterIndex].matrix);
+    final matrix = _adj.combinedMatrix(kFilters[_selectedFilterIndex].matrix);
     final hasColorEdit = _selectedFilterIndex != 0 || !_adj.isIdentity;
-    final hasRotation  = _rotationQuarters != 0;
-    final hasOverlay   = _strokes.isNotEmpty || _overlays.isNotEmpty;
+    final hasRotation = _rotationQuarters != 0;
+    final hasOverlay = _strokes.isNotEmpty || _overlays.isNotEmpty;
 
     // Nothing to bake — hand the trimmed file straight to AddPostScreen.
     if (!hasColorEdit && !hasRotation && !hasOverlay) return _activeVideoFile;
@@ -488,20 +521,22 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         '/baked_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
     final cmd = _buildFFmpegCommand(
-      inputPath:    _activeVideoFile.path,
-      outputPath:   outPath,
-      matrix:       matrix,
+      inputPath: _activeVideoFile.path,
+      outputPath: outPath,
+      matrix: matrix,
       hasColorEdit: hasColorEdit,
-      overlayFile:  overlayFile,
+      overlayFile: overlayFile,
     );
 
     await _log(operation: 'bake/ffmpeg_start', data: {'cmd': cmd});
 
-    final session    = await FFmpegKit.execute(cmd);
+    final session = await FFmpegKit.execute(cmd);
     final returnCode = await session.getReturnCode();
 
     // Always delete the temp PNG.
-    try { overlayFile?.deleteSync(); } catch (_) {}
+    try {
+      overlayFile?.deleteSync();
+    } catch (_) {}
 
     if (!ReturnCode.isSuccess(returnCode)) {
       final logs = await session.getAllLogsAsString() ?? '';
@@ -522,22 +557,22 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   //   4. overlay            — transparent PNG of draw strokes + text overlays
   // ---------------------------------------------------------------------------
   String _buildFFmpegCommand({
-    required String       inputPath,
-    required String       outputPath,
+    required String inputPath,
+    required String outputPath,
     required List<double> matrix,
-    required bool         hasColorEdit,
-    File?                 overlayFile,
+    required bool hasColorEdit,
+    File? overlayFile,
   }) {
     // Native video pixel dimensions (before rotation).
-    final videoW = _videoController?.value.size.width.round()  ?? 1080;
+    final videoW = _videoController?.value.size.width.round() ?? 1080;
     final videoH = _videoController?.value.size.height.round() ?? 1920;
 
     // Output dimensions swap for 90° / 270° rotations.
     final outW = (_rotationQuarters % 2 == 1) ? videoH : videoW;
     final outH = (_rotationQuarters % 2 == 1) ? videoW : videoH;
 
-    final inputs = '-i "$inputPath"'
-        + (overlayFile != null ? ' -i "${overlayFile.path}"' : '');
+    final inputs = '-i "$inputPath"' +
+        (overlayFile != null ? ' -i "${overlayFile.path}"' : '');
 
     // ── Video filter parts for [0:v] ─────────────────────────────────────────
     final vParts = <String>[];
@@ -557,7 +592,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
       // curves handles the additive offsets (m[4], m[9], m[14]).
       // ffmpeg curves: maps input→output in 0–255 space linearly.
-      final offR = matrix[4]; final offG = matrix[9]; final offB = matrix[14];
+      final offR = matrix[4];
+      final offG = matrix[9];
+      final offB = matrix[14];
       if (offR != 0.0 || offG != 0.0 || offB != 0.0) {
         final r0 = offR.clamp(0, 255).round();
         final r1 = (255 + offR).clamp(0, 255).round();
@@ -574,9 +611,15 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     // Rotation: ffmpeg transpose values
     //   1 = 90° CW,  2 = 90° CCW (= 270° CW),  two 1s = 180°
     switch (_rotationQuarters) {
-      case 1: vParts.add('transpose=1'); break;
-      case 2: vParts.add('transpose=1,transpose=1'); break;
-      case 3: vParts.add('transpose=2'); break;
+      case 1:
+        vParts.add('transpose=1');
+        break;
+      case 2:
+        vParts.add('transpose=1,transpose=1');
+        break;
+      case 3:
+        vParts.add('transpose=2');
+        break;
     }
 
     // ── Assemble ─────────────────────────────────────────────────────────────
@@ -601,13 +644,19 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     // We rotate [1:v] by the same amount so both streams share one frame of
     // reference, then scale the overlay to the final pixel dimensions.
     final vidFilter = vParts.isNotEmpty ? vParts.join(',') : 'copy';
-    final vidChain  = '[0:v]${vidFilter}[vid]';
+    final vidChain = '[0:v]${vidFilter}[vid]';
 
     final ovrParts = <String>[];
     switch (_rotationQuarters) {
-      case 1: ovrParts.add('transpose=1'); break;
-      case 2: ovrParts.add('transpose=1,transpose=1'); break;
-      case 3: ovrParts.add('transpose=2'); break;
+      case 1:
+        ovrParts.add('transpose=1');
+        break;
+      case 2:
+        ovrParts.add('transpose=1,transpose=1');
+        break;
+      case 3:
+        ovrParts.add('transpose=2');
+        break;
     }
     ovrParts.add('scale=$outW:$outH');
     final ovrChain = '[1:v]${ovrParts.join(',')}[ovr]';
@@ -633,11 +682,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (mounted) setState(() => _selectedOverlayIndex = null);
     await Future.delayed(const Duration(milliseconds: 80));
 
-    final boundary = _overlayKey.currentContext!.findRenderObject()
-        as RenderRepaintBoundary;
+    final boundary =
+        _overlayKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
 
     // pixelRatio 1.0 — ffmpeg will scale to the exact video resolution.
-    final image    = await boundary.toImage(pixelRatio: 1.0);
+    final image = await boundary.toImage(pixelRatio: 1.0);
     final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
     image.dispose();
 
@@ -662,7 +711,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     } catch (e, st) {
       unawaited(_log(
         operation: 'video_edit/build_exception',
-        errorMessage: e.toString(), stackTrace: st.toString(),
+        errorMessage: e.toString(),
+        stackTrace: st.toString(),
       ));
       return Scaffold(
         backgroundColor: Colors.black,
@@ -677,14 +727,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   Widget _buildBody(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
-    final topPad     = MediaQuery.of(context).padding.top;
-    final botPad     = MediaQuery.of(context).padding.bottom;
+    final topPad = MediaQuery.of(context).padding.top;
+    final botPad = MediaQuery.of(context).padding.bottom;
 
-    final videoH =
-        (screenSize.height - topPad - _topBarH - _panelH - botPad)
-            .clamp(120.0, double.infinity);
+    final videoH = (screenSize.height - topPad - _topBarH - _panelH - botPad)
+        .clamp(120.0, double.infinity);
 
-    final isTrim       = _activeTool == _Tool.trim;
+    final isTrim = _activeTool == _Tool.trim;
     final isDrawActive = _activeTool == _Tool.draw;
 
     return Scaffold(
@@ -699,7 +748,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           SizedBox(
             height: videoH,
             child: Stack(children: [
-
               // IndexedStack: index 0 = trimmer VideoViewer, index 1 = preview
               Positioned.fill(
                 child: IndexedStack(
@@ -709,7 +757,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       color: Colors.black,
                       child: VideoViewer(trimmer: _trimmer),
                     ),
-
                     SizedBox.expand(
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
@@ -778,21 +825,23 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 Positioned.fill(
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onPanStart:  _onDrawStart,
+                    onPanStart: _onDrawStart,
                     onPanUpdate: _onDrawUpdate,
-                    onPanEnd:    _onDrawEnd,
+                    onPanEnd: _onDrawEnd,
                     child: const SizedBox.expand(),
                   ),
                 ),
 
               if (!isTrim && !isDrawActive && !_isPlaying)
                 const Center(
-                  child: Icon(Icons.play_circle_outline,
-                      color: Colors.white54, size: 64)),
+                    child: Icon(Icons.play_circle_outline,
+                        color: Colors.white54, size: 64)),
 
               if (isDrawActive)
                 Positioned(
-                  bottom: 12, left: 0, right: 0,
+                  bottom: 12,
+                  left: 0,
+                  right: 0,
                   child: Center(
                     child: Container(
                       padding: const EdgeInsets.symmetric(
@@ -803,10 +852,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       ),
                       child: Row(mainAxisSize: MainAxisSize.min, children: [
                         Container(
-                          width:  _drawSize.clamp(6, 24),
+                          width: _drawSize.clamp(6, 24),
                           height: _drawSize.clamp(6, 24),
                           decoration: BoxDecoration(
-                            shape: BoxShape.circle, color: _drawColor,
+                            shape: BoxShape.circle,
+                            color: _drawColor,
                             border: Border.all(
                                 color: Colors.white.withOpacity(0.5), width: 1),
                           ),
@@ -823,7 +873,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
               if (_isDragging)
                 Positioned(
-                  bottom: 0, left: 0, right: 0,
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
                   child: TrashZone(isOverTrash: _isOverTrash),
                 ),
             ]),
@@ -837,18 +889,21 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
           SizedBox(height: botPad),
         ]),
-
         if (_isTyping)
           Positioned.fill(
             child: TextEntryOverlay(
-              controller: _textCtrl, focusNode: _textFocus,
-              textColor: _tColor, fontSize: _tSize,
-              isBold: _tBold, fontIndex: _tFont,
+              controller: _textCtrl,
+              focusNode: _textFocus,
+              textColor: _tColor,
+              fontSize: _tSize,
+              isBold: _tBold,
+              fontIndex: _tFont,
               onColorChanged: (c) => setState(() => _tColor = c),
-              onSizeChanged:  (v) => setState(() => _tSize  = v),
-              onBoldToggle:   ()  => setState(() => _tBold  = !_tBold),
-              onFontChanged:  (i) => setState(() => _tFont  = i),
-              onConfirm: _confirmText, onCancel: _cancelText,
+              onSizeChanged: (v) => setState(() => _tSize = v),
+              onBoldToggle: () => setState(() => _tBold = !_tBold),
+              onFontChanged: (i) => setState(() => _tFont = i),
+              onConfirm: _confirmText,
+              onCancel: _cancelText,
               topPadding: topPad,
             ),
           ),
@@ -861,52 +916,53 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // ===========================================================================
 
   Widget _buildTopBar() => SizedBox(
-    height: _topBarH,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          GestureDetector(
-            onTap: () async {
-              await _silenceAndStop();
-              if (mounted) Navigator.pop(context);
-            },
-            child: const Padding(
-              padding: EdgeInsets.all(8),
-              child: Icon(Icons.arrow_back_ios_new,
-                  color: Colors.white, size: 20),
-            ),
+        height: _topBarH,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              GestureDetector(
+                onTap: () async {
+                  await _silenceAndStop();
+                  if (mounted) Navigator.pop(context);
+                },
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Icon(Icons.arrow_back_ios_new,
+                      color: Colors.white, size: 20),
+                ),
+              ),
+              const Text('Edit Video',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600)),
+              GestureDetector(
+                onTap: _isSavingTrim ? null : _onNext,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                  decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20)),
+                  child: _isSavingTrim
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              color: Colors.black, strokeWidth: 2))
+                      : const Text('Next',
+                          style: TextStyle(
+                              color: Colors.black,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700)),
+                ),
+              ),
+            ],
           ),
-          const Text('Edit Video',
-              style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 17,
-                  fontWeight: FontWeight.w600)),
-          GestureDetector(
-            onTap: _isSavingTrim ? null : _onNext,
-            child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-              decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20)),
-              child: _isSavingTrim
-                  ? const SizedBox(
-                      width: 18, height: 18,
-                      child: CircularProgressIndicator(
-                          color: Colors.black, strokeWidth: 2))
-                  : const Text('Next',
-                      style: TextStyle(
-                          color: Colors.black,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700)),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
+        ),
+      );
 
   // ===========================================================================
   // PANEL
@@ -918,12 +974,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         height: 86,
         child: ListView(
           scrollDirection: Axis.horizontal,
-          padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           children: _Tool.values
               .where((t) => !(t == _Tool.trim && _trimApplied))
               .map((tool) {
-            final isActive  = _activeTool == tool;
+            final isActive = _activeTool == tool;
             final showBadge = tool == _Tool.trim && _trimApplied && !isActive;
 
             return GestureDetector(
@@ -934,7 +989,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   Stack(clipBehavior: Clip.none, children: [
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 150),
-                      width: 50, height: 50,
+                      width: 50,
+                      height: 50,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         color: isActive
@@ -955,14 +1011,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                     if (showBadge)
                       Positioned(
-                        top: 2, right: 2,
+                        top: 2,
+                        right: 2,
                         child: Container(
-                          width: 8, height: 8,
+                          width: 8,
+                          height: 8,
                           decoration: BoxDecoration(
-                            shape: BoxShape.circle, color: Colors.white,
+                            shape: BoxShape.circle,
+                            color: Colors.white,
                             border: Border.all(
-                                color: Colors.black.withOpacity(0.4),
-                                width: 1),
+                                color: Colors.black.withOpacity(0.4), width: 1),
                           ),
                         ),
                       ),
@@ -974,9 +1032,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                             ? Colors.white
                             : Colors.white.withOpacity(0.48),
                         fontSize: 10,
-                        fontWeight: isActive
-                            ? FontWeight.w600
-                            : FontWeight.normal,
+                        fontWeight:
+                            isActive ? FontWeight.w600 : FontWeight.normal,
                       )),
                 ]),
               ),
@@ -984,7 +1041,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           }).toList(),
         ),
       ),
-
       Divider(color: Colors.white.withOpacity(0.07), height: 1),
       Expanded(child: _buildToolDetail()),
     ]);
@@ -1007,13 +1063,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         );
       case _Tool.draw:
         return DrawPanel(
-          tool: _drawTool, color: _drawColor, strokeWidth: _drawSize,
-          onUndo: () =>
-              setState(() { if (_strokes.isNotEmpty) _strokes.removeLast(); }),
-          onClear:        () => setState(() => _strokes.clear()),
-          onToolChanged:  (t) => setState(() => _drawTool  = t),
+          tool: _drawTool,
+          color: _drawColor,
+          strokeWidth: _drawSize,
+          onUndo: () => setState(() {
+            if (_strokes.isNotEmpty) _strokes.removeLast();
+          }),
+          onClear: () => setState(() => _strokes.clear()),
+          onToolChanged: (t) => setState(() => _drawTool = t),
           onColorChanged: (c) => setState(() => _drawColor = c),
-          onSizeChanged:  (v) => setState(() => _drawSize  = v),
+          onSizeChanged: (v) => setState(() => _drawSize = v),
         );
       default:
         return Center(
@@ -1030,27 +1089,32 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         Padding(
           padding: const EdgeInsets.only(top: 8, left: 8, right: 8),
           child: TrimViewer(
-            trimmer:        _trimmer,
-            viewerHeight:   70,
-            viewerWidth:    MediaQuery.of(context).size.width - 16,
+            trimmer: _trimmer,
+            viewerHeight: 70,
+            viewerWidth: MediaQuery.of(context).size.width - 16,
             maxVideoLength: const Duration(seconds: 60),
             editorProperties: TrimEditorProperties(
-              circleSize:          12,
-              borderWidth:          4,
-              scrubberWidth:        2,
-              sideTapSize:         24,
-              circlePaintColor:    Colors.white,
-              borderPaintColor:    Colors.white,
-              scrubberPaintColor:  Colors.white,
+              circleSize: 12,
+              borderWidth: 4,
+              scrubberWidth: 2,
+              sideTapSize: 24,
+              circlePaintColor: Colors.white,
+              borderPaintColor: Colors.white,
+              scrubberPaintColor: Colors.white,
             ),
-            onChangeStart: (v) { _startValue = v; _trimDirty = true; },
-            onChangeEnd:   (v) { _endValue   = v; _trimDirty = true; },
+            onChangeStart: (v) {
+              _startValue = v;
+              _trimDirty = true;
+            },
+            onChangeEnd: (v) {
+              _endValue = v;
+              _trimDirty = true;
+            },
             onChangePlaybackState: (p) {
               if (mounted) setState(() => _isTrimPlaying = p);
             },
           ),
         ),
-
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Row(
@@ -1065,7 +1129,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   } catch (_) {}
                 },
                 child: Container(
-                  width: 30, height: 30,
+                  width: 30,
+                  height: 30,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: Colors.white.withOpacity(0.1),
@@ -1076,17 +1141,17 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     _isTrimPlaying
                         ? Icons.pause_rounded
                         : Icons.play_arrow_rounded,
-                    color: Colors.white, size: 15,
+                    color: Colors.white,
+                    size: 15,
                   ),
                 ),
               ),
-
               GestureDetector(
                 onTap: (_trimDirty && !_isSavingTrimInline) ? _saveTrim : null,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 22, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
                   decoration: BoxDecoration(
                     color: _trimDirty
                         ? Colors.white
@@ -1095,7 +1160,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                   child: _isSavingTrimInline
                       ? const SizedBox(
-                          width: 14, height: 14,
+                          width: 14,
+                          height: 14,
                           child: CircularProgressIndicator(
                               color: Colors.black, strokeWidth: 2))
                       : Text('Save',
@@ -1121,20 +1187,20 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   List<Widget> _buildTextOverlays(double w, double h) {
     return _overlays.asMap().entries.map((entry) {
-      final index        = entry.key;
-      final o            = entry.value;
+      final index = entry.key;
+      final o = entry.value;
       final draggingThis = _dragIndex == index;
-      final isDraw       = _activeTool == _Tool.draw;
+      final isDraw = _activeTool == _Tool.draw;
       return Positioned(
         left: (o.position.dx * w).clamp(0.0, w - 10),
-        top:  (o.position.dy * h).clamp(0.0, h - 10),
+        top: (o.position.dy * h).clamp(0.0, h - 10),
         child: GestureDetector(
           onTap: isDraw
               ? null
               : () => setState(() => _selectedOverlayIndex = index),
-          onPanStart:  isDraw ? null : (_) => _onTextDragStart(index),
+          onPanStart: isDraw ? null : (_) => _onTextDragStart(index),
           onPanUpdate: isDraw ? null : (d) => _onTextDragUpdate(index, d, w, h),
-          onPanEnd:    isDraw ? null : (_) => _onTextDragEnd(index, h),
+          onPanEnd: isDraw ? null : (_) => _onTextDragEnd(index, h),
           child: AnimatedOpacity(
             opacity: (draggingThis && _isOverTrash) ? 0.4 : 1.0,
             duration: const Duration(milliseconds: 100),
@@ -1154,23 +1220,35 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   IconData _toolIcon(_Tool t) {
     switch (t) {
-      case _Tool.trim:    return Icons.content_cut_rounded;
-      case _Tool.filters: return Icons.auto_fix_high_rounded;
-      case _Tool.adjust:  return Icons.tune_rounded;
-      case _Tool.draw:    return Icons.brush_rounded;
-      case _Tool.text:    return Icons.text_fields_rounded;
-      case _Tool.rotate:  return Icons.rotate_90_degrees_cw_rounded;
+      case _Tool.trim:
+        return Icons.content_cut_rounded;
+      case _Tool.filters:
+        return Icons.auto_fix_high_rounded;
+      case _Tool.adjust:
+        return Icons.tune_rounded;
+      case _Tool.draw:
+        return Icons.brush_rounded;
+      case _Tool.text:
+        return Icons.text_fields_rounded;
+      case _Tool.rotate:
+        return Icons.rotate_90_degrees_cw_rounded;
     }
   }
 
   String _toolLabel(_Tool t) {
     switch (t) {
-      case _Tool.trim:    return 'Trim';
-      case _Tool.filters: return 'Filters';
-      case _Tool.adjust:  return 'Adjust';
-      case _Tool.draw:    return 'Draw';
-      case _Tool.text:    return 'Text';
-      case _Tool.rotate:  return 'Rotate';
+      case _Tool.trim:
+        return 'Trim';
+      case _Tool.filters:
+        return 'Filters';
+      case _Tool.adjust:
+        return 'Adjust';
+      case _Tool.draw:
+        return 'Draw';
+      case _Tool.text:
+        return 'Text';
+      case _Tool.rotate:
+        return 'Rotate';
     }
   }
 }
