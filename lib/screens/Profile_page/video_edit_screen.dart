@@ -10,6 +10,28 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 enum _Tool { trim, filters, adjust, draw, text, rotate }
 
+// ---------------------------------------------------------------------------
+// Bundles every visual edit so AddPostScreen can re-apply them as
+// widget layers when showing the preview / thumbnail.
+// ---------------------------------------------------------------------------
+class VideoEditResult {
+  final File videoFile; // trimmed file (rotation applied as widget transform)
+  final int filterIndex;
+  final EditAdjustments adjustments;
+  final List<DrawStroke> strokes;
+  final List<TextOverlay> overlays;
+  final int rotationQuarters; // applied via Transform.rotate in both screens
+
+  const VideoEditResult({
+    required this.videoFile,
+    required this.filterIndex,
+    required this.adjustments,
+    required this.strokes,
+    required this.overlays,
+    required this.rotationQuarters,
+  });
+}
+
 class VideoEditScreen extends StatefulWidget {
   final File videoFile;
   final VoidCallback? onPostUploaded;
@@ -30,7 +52,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _isVideoInitialized = false;
   bool _isPlaying = false;
 
-  // ── Active video file ──────────────────────────────────────────────────────
+  // ── Active video file (updated after trim) ─────────────────────────────────
   late File _activeVideoFile;
 
   // ── Trimmer ────────────────────────────────────────────────────────────────
@@ -38,10 +60,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   double _startValue = 0.0;
   double _endValue = 0.0;
   bool _isTrimPlaying = false;
-  bool _isSavingTrim = false;
   bool _isSavingTrimInline = false;
   bool _trimDirty = false;
   bool _trimApplied = false;
+
+  // ── Processing spinner (shown on Next button) ───────────────────────────────
+  bool _isProcessing = false;
 
   // ── Active tool ────────────────────────────────────────────────────────────
   _Tool _activeTool = _Tool.trim;
@@ -70,7 +94,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _tBold = true;
   int _tFont = 0;
 
-  // ── Rotation ───────────────────────────────────────────────────────────────
+  // ── Rotation (widget-level; passed to AddPostScreen via rotationQuarters) ──
   int _rotationQuarters = 0;
 
   // ── Drag-to-trash ──────────────────────────────────────────────────────────
@@ -215,10 +239,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     }
     if (mounted) setState(() => _isPlaying = _videoController!.value.isPlaying);
   }
-
-  // ===========================================================================
-  // SILENCE & STOP
-  // ===========================================================================
 
   Future<void> _silenceAndStop() async {
     await _videoController?.pause();
@@ -452,10 +472,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   // ===========================================================================
-  // NEXT
+  // NEXT — bundle ALL edit state and pass to AddPostScreen.
+  // Rotation is passed as rotationQuarters; AddPostScreen applies it via
+  // Transform.rotate on the preview widget (no file-level bake needed).
   // ===========================================================================
 
   Future<void> _onNext() async {
+    // 1. Save trim if the user moved the handles but didn't tap Save.
     if (_trimDirty) {
       await _saveTrim();
       if (!mounted) return;
@@ -464,14 +487,40 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     await _silenceAndStop();
     if (!mounted) return;
 
-    Navigator.push(
+    setState(() => _isProcessing = true);
+
+    try {
+      final result = VideoEditResult(
+        videoFile: _activeVideoFile,
+        filterIndex: _selectedFilterIndex,
+        adjustments: _adj,
+        strokes: List.unmodifiable(_strokes),
+        overlays: List.unmodifiable(_overlays),
+        rotationQuarters: _rotationQuarters,
+      );
+
+      Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => AddPostScreen(
-            initialVideoFile: _activeVideoFile,
+            initialVideoFile: result.videoFile,
+            editResult: result,
             onPostUploaded: widget.onPostUploaded,
           ),
-        ));
+        ),
+      );
+    } catch (e, st) {
+      await _log(
+          operation: 'next/error',
+          errorMessage: e.toString(),
+          stackTrace: st.toString());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Failed to process video. Please try again.')));
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
   }
 
   // ===========================================================================
@@ -520,12 +569,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         Column(children: [
           SizedBox(height: topPad),
           _buildTopBar(),
-
-          // ── Video area ─────────────────────────────────────────────────────
           SizedBox(
             height: videoH,
             child: Stack(children: [
-              // IndexedStack: index 0 = trimmer VideoViewer, index 1 = preview
               Positioned.fill(
                 child: IndexedStack(
                   index: isTrim ? 0 : 1,
@@ -566,8 +612,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ],
                 ),
               ),
-
-              // ── Overlay (draw strokes + text) ───────────────────────────────
               if (!isTrim)
                 Positioned.fill(
                   child: RepaintBoundary(
@@ -589,8 +633,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                   ),
                 ),
-
-              // ── Draw gesture overlay ────────────────────────────────────────
               if (!isTrim && isDrawActive)
                 Positioned.fill(
                   child: GestureDetector(
@@ -601,12 +643,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     child: const SizedBox.expand(),
                   ),
                 ),
-
               if (!isTrim && !isDrawActive && !_isPlaying)
                 const Center(
                     child: Icon(Icons.play_circle_outline,
                         color: Colors.white54, size: 64)),
-
               if (isDrawActive)
                 Positioned(
                   bottom: 12,
@@ -640,7 +680,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                   ),
                 ),
-
               if (_isDragging)
                 Positioned(
                   bottom: 0,
@@ -650,13 +689,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
             ]),
           ),
-
           Container(
             height: _panelH,
             color: Colors.black,
             child: _buildPanel(),
           ),
-
           SizedBox(height: botPad),
         ]),
         if (_isTyping)
@@ -709,14 +746,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       fontSize: 17,
                       fontWeight: FontWeight.w600)),
               GestureDetector(
-                onTap: _isSavingTrim ? null : _onNext,
+                onTap: _isProcessing ? null : _onNext,
                 child: Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
                   decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(20)),
-                  child: _isSavingTrim
+                  child: _isProcessing
                       ? const SizedBox(
                           width: 18,
                           height: 18,
