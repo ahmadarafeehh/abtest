@@ -26,6 +26,9 @@ class MediaEditScreen extends StatefulWidget {
 class _MediaEditScreenState extends State<MediaEditScreen> {
   final GlobalKey _previewKey = GlobalKey();
 
+  // ── Mutable image bytes (updated when crop is confirmed) ──────────────────
+  late Uint8List _editBytes;
+
   // ── Filter + Adjust ───────────────────────────────────────────────────────
   int _filterIndex = 0;
   EditAdjustments _adj = const EditAdjustments();
@@ -87,6 +90,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   @override
   void initState() {
     super.initState();
+    _editBytes = widget.imageBytes;
     _loadImageDimensions();
   }
 
@@ -101,7 +105,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   /// snap calculations are accurate for non-square images.
   Future<void> _loadImageDimensions() async {
     try {
-      final codec = await ui.instantiateImageCodec(widget.imageBytes);
+      final codec = await ui.instantiateImageCodec(_editBytes);
       final frame = await codec.getNextFrame();
       if (mounted) {
         setState(() {
@@ -171,31 +175,14 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   void _rotate() =>
       setState(() => _rotationQuarters = (_rotationQuarters + 1) % 4);
 
-  Uint8List _applyRotationAndCrop(Uint8List bytes) {
-    // FIX: use decodeImage instead of decodeJpg so this works whether
-    // _renderFinalImage returns JPEG or falls back to PNG bytes.
+  Uint8List _applyRotation(Uint8List bytes) {
+    if (_rotationQuarters == 0) return bytes;
+
     var decoded = img.decodeImage(bytes);
     if (decoded == null) return bytes;
 
-    // Rotation
     for (int i = 0; i < _rotationQuarters; i++) {
       decoded = img.copyRotate(decoded!, angle: 90);
-    }
-
-    // Crop — only apply if the user moved the handles away from full-image.
-    final isFullImage = _cropRect.left == 0 &&
-        _cropRect.top  == 0 &&
-        _cropRect.right  == 1 &&
-        _cropRect.bottom == 1;
-
-    if (!isFullImage && decoded != null) {
-      final iw = decoded.width.toDouble();
-      final ih = decoded.height.toDouble();
-      final x = (_cropRect.left   * iw).round().clamp(0, decoded.width  - 1);
-      final y = (_cropRect.top    * ih).round().clamp(0, decoded.height - 1);
-      final w = (_cropRect.width  * iw).round().clamp(1, decoded.width  - x);
-      final h = (_cropRect.height * ih).round().clamp(1, decoded.height - y);
-      decoded = img.copyCrop(decoded!, x: x, y: y, width: w, height: h);
     }
 
     return decoded != null
@@ -204,15 +191,56 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   }
 
   // ===========================================================================
+  // CROP — eager application (called when user presses "Done")
+  // ===========================================================================
+
+  /// Applies [cropRect] (normalised 0–1) to [bytes] immediately and returns
+  /// the cropped JPEG bytes. Called as soon as the user confirms a crop so
+  /// that the preview updates right away.
+  Uint8List _applyCropEager(Uint8List bytes, Rect cropRect) {
+    var decoded = img.decodeImage(bytes);
+    if (decoded == null) return bytes;
+
+    final iw = decoded.width.toDouble();
+    final ih = decoded.height.toDouble();
+    final x = (cropRect.left   * iw).round().clamp(0, decoded.width  - 1);
+    final y = (cropRect.top    * ih).round().clamp(0, decoded.height - 1);
+    final w = (cropRect.width  * iw).round().clamp(1, decoded.width  - x);
+    final h = (cropRect.height * ih).round().clamp(1, decoded.height - y);
+
+    decoded = img.copyCrop(decoded, x: x, y: y, width: w, height: h);
+    return Uint8List.fromList(img.encodeJpg(decoded, quality: 92));
+  }
+
+  // ===========================================================================
   // CROP CONFIRM / RESET
   // ===========================================================================
 
-  void _confirmCrop() {
+  Future<void> _confirmCrop() async {
     final isFull = _cropRect == const Rect.fromLTRB(0, 0, 1, 1);
+
+    if (isFull) {
+      // Nothing to do — just go back to the filters tab.
+      setState(() {
+        _cropApplied = false;
+        _activeTab   = _Tab.filters;
+      });
+      return;
+    }
+
+    // Apply the crop to the live bytes immediately so the preview reflects it.
+    final cropped = _applyCropEager(_editBytes, _cropRect);
+
     setState(() {
-      _cropApplied = !isFull;
-      _activeTab   = _Tab.filters; // return to first tab after confirming
+      _editBytes   = cropped;
+      _cropRect    = const Rect.fromLTRB(0, 0, 1, 1); // reset — already baked in
+      _cropAspect  = CropAspect.free;
+      _cropApplied = true;
+      _activeTab   = _Tab.filters;
     });
+
+    // Refresh image dimensions so future aspect-ratio snaps are accurate.
+    await _loadImageDimensions();
   }
 
   void _resetCrop() {
@@ -372,7 +400,9 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   Future<void> _onNext() async {
     try {
       final rendered  = await _renderFinalImage();
-      final processed = _applyRotationAndCrop(rendered);
+      // Crop is already baked into _editBytes at this point;
+      // only rotation still needs to be applied post-render.
+      final processed = _applyRotation(rendered);
       if (mounted) {
         Navigator.push(
             context,
@@ -477,13 +507,14 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                   child: RepaintBoundary(
                     key: _previewKey,
                     child: Stack(children: [
-                      // Filtered image
+                      // Filtered image — uses _editBytes so the cropped
+                      // result is immediately visible in the preview.
                       Positioned.fill(
                         child: ColorFiltered(
                           colorFilter: ColorFilter.matrix(_matrix),
                           child: Transform.rotate(
                               angle: _rotationQuarters * 3.14159265 / 2,
-                              child: Image.memory(widget.imageBytes,
+                              child: Image.memory(_editBytes,
                                   fit: BoxFit.contain,
                                   width: double.infinity,
                                   height: double.infinity)),
@@ -494,7 +525,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                       if (_blurType != BlurType.none)
                         Positioned.fill(
                             child: BlurOverlay(
-                          imageBytes: widget.imageBytes,
+                          imageBytes: _editBytes,
                           blurType: _blurType,
                           blurIntensity: _blurIntensity,
                         )),
@@ -554,7 +585,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
 
               // ── Interactive crop overlay ─────────────────────────────
               // Sits OUTSIDE the RepaintBoundary so it is not baked into
-              // the exported image — the crop is applied post-render.
+              // the exported image — the crop is applied via _applyCropEager.
               if (_activeTab == _Tab.crop)
                 Positioned.fill(
                   child: InteractiveCropOverlay(
@@ -773,7 +804,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
       case _Tab.filters:
         return FilterStrip(
           selectedIndex: _filterIndex,
-          previewImage: widget.imageBytes,
+          previewImage: _editBytes,
           onSelect: (i) => setState(() => _filterIndex = i),
         );
       case _Tab.adjust:
