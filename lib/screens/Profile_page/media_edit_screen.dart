@@ -172,7 +172,9 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
       setState(() => _rotationQuarters = (_rotationQuarters + 1) % 4);
 
   Uint8List _applyRotationAndCrop(Uint8List bytes) {
-    var decoded = img.decodeJpg(bytes);
+    // FIX: use decodeImage instead of decodeJpg so this works whether
+    // _renderFinalImage returns JPEG or falls back to PNG bytes.
+    var decoded = img.decodeImage(bytes);
     if (decoded == null) return bytes;
 
     // Rotation
@@ -202,7 +204,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   }
 
   // ===========================================================================
-  // TEXT
+  // CROP CONFIRM / RESET
   // ===========================================================================
 
   void _confirmCrop() {
@@ -567,9 +569,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                 ),
 
               // ── Crop action bar ───────────────────────────────────────
-              // Floats at the bottom of the image while crop is active.
-              // Reset clears back to full-image; Done saves the rect and
-              // returns the user to the Filters tab.
               if (_activeTab == _Tab.crop)
                 Positioned(
                   bottom: 16, left: 24, right: 24,
@@ -783,8 +782,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
           onChanged: (a) => setState(() => _adj = a),
         );
       case _Tab.crop:
-        // The snap panel lets users optionally lock to a common aspect ratio.
-        // The primary interaction is drag-to-crop on the overlay above.
         return SnapCropPanel(
           selected: _cropAspect,
           onSnapToAspect: _snapCropToAspect,
