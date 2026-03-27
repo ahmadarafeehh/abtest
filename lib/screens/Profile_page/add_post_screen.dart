@@ -650,7 +650,7 @@ class _AddPostScreenState extends State<AddPostScreen>
   }
 
   // ===========================================================================
-  // CAPTION SECTION — polished redesign
+  // CAPTION SECTION — polished redesign (with character counter)
   // ===========================================================================
 
   Widget _buildPostButton(bool isLoading, VoidCallback onPressed) {
@@ -795,7 +795,8 @@ class _AddPostScreenState extends State<AddPostScreen>
             ),
           ),
 
-          // ── Divider + character counter ──────────────────────────────
+          // ── Character counter with progress bar ───────────────────────
+          // Only shown when near the limit (charCount > 200)
           if (isNearLimit) ...[
             const SizedBox(height: 8),
             Padding(
@@ -835,6 +836,7 @@ class _AddPostScreenState extends State<AddPostScreen>
                   ),
                 ),
                 const Spacer(),
+                // Character counter text (shown when near limit)
                 if (isNearLimit)
                   Text(
                     '$charCount / 250',
