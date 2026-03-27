@@ -541,12 +541,6 @@ class _AddPostScreenState extends State<AddPostScreen>
 
   // ===========================================================================
   // VIDEO PREVIEW
-  // Re-applies every VideoEditScreen layer in the same order:
-  //   1. ColorFiltered  (filter + adjustments)
-  //   2. Transform.rotate  (rotation quarters)
-  //   3. DrawingPainter  (brush strokes — drawn at original canvas scale)
-  //   4. Text overlays  (fractional positions re-mapped to this canvas)
-  //   5. Play/pause icon
   // ===========================================================================
   Widget _buildVideoPreview() {
     final VideoEditResult? er = widget.editResult;
@@ -554,9 +548,9 @@ class _AddPostScreenState extends State<AddPostScreen>
 
     return GestureDetector(
       onTap: _toggleVideoPlayback,
-      child: Container(
+      child: SizedBox(
+        width: double.infinity,
         height: MediaQuery.of(context).size.height * 0.5,
-        color: Colors.black,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final double w = constraints.maxWidth;
@@ -565,8 +559,9 @@ class _AddPostScreenState extends State<AddPostScreen>
             return Stack(
               alignment: Alignment.center,
               children: [
+                // Black backing so there are no white gaps
+                Positioned.fill(child: Container(color: Colors.black)),
 
-                // ── 1 + 2: Video with filter and rotation ──────────────────
                 if (_isVideoInitialized && _videoController != null)
                   ColorFiltered(
                     colorFilter: ColorFilter.matrix(_colorMatrix),
@@ -583,10 +578,6 @@ class _AddPostScreenState extends State<AddPostScreen>
                 else
                   const CircularProgressIndicator(color: Colors.white),
 
-                // ── 3: Draw strokes ────────────────────────────────────────
-                // Strokes are stored at the pixel positions they were drawn
-                // in VideoEditScreen. We fill the same bounding box so they
-                // land in roughly the same place.
                 if (er != null && er.strokes.isNotEmpty)
                   Positioned.fill(
                     child: IgnorePointer(
@@ -599,12 +590,8 @@ class _AddPostScreenState extends State<AddPostScreen>
                     ),
                   ),
 
-                // ── 4: Text overlays ───────────────────────────────────────
-                // Positions are stored as fractions (0.0–1.0), so they map
-                // correctly regardless of preview size.
                 if (er != null) ..._buildTextOverlays(er, w, h),
 
-                // ── 5: Play / pause icon ───────────────────────────────────
                 if (_isVideoInitialized && !_isPlaying)
                   IgnorePointer(
                     child: Container(
@@ -629,8 +616,6 @@ class _AddPostScreenState extends State<AddPostScreen>
     );
   }
 
-  /// Converts fractional overlay positions (0.0–1.0) back to pixel offsets
-  /// using the actual preview canvas dimensions from LayoutBuilder.
   List<Widget> _buildTextOverlays(VideoEditResult er, double w, double h) {
     return er.overlays.map((o) {
       return Positioned(
@@ -647,7 +632,25 @@ class _AddPostScreenState extends State<AddPostScreen>
   }
 
   // ===========================================================================
-  // CAPTION INPUT
+  // IMAGE PREVIEW
+  // Edge-to-edge, black background, no border — fills the container fully.
+  // ===========================================================================
+  Widget _buildImagePreview() {
+    return SizedBox(
+      width: double.infinity,
+      height: MediaQuery.of(context).size.height * 0.5,
+      child: Image.memory(
+        _file!,
+        // cover fills the box completely — no white letterbox bars
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // CAPTION SECTION — polished redesign
   // ===========================================================================
 
   Widget _buildPostButton(bool isLoading, VoidCallback onPressed) {
@@ -668,65 +671,186 @@ class _AddPostScreenState extends State<AddPostScreen>
   }
 
   Widget _buildCaptionInput(AppUser user) {
-    final bool isNearLimit = _descriptionController.text.length > 200;
-    final bool isOverLimit = _descriptionController.text.length > 250;
+    final int charCount = _descriptionController.text.length;
+    final bool isNearLimit = charCount > 200;
+    final bool isOverLimit = charCount > 250;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            CircleAvatar(
-              radius: 20,
-              backgroundColor: Colors.transparent,
-              backgroundImage: (user.photoUrl?.isNotEmpty == true &&
-                      user.photoUrl != "default")
-                  ? NetworkImage(user.photoUrl!)
-                  : null,
-              child: (user.photoUrl?.isEmpty == true ||
-                      user.photoUrl == "default")
-                  ? Icon(Icons.account_circle, size: 40, color: primaryColor)
-                  : null,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: TextField(
-                controller: _descriptionController,
-                focusNode: _captionFocusNode,
-                decoration: InputDecoration(
-                  hintText: "Write a caption...",
-                  hintStyle: TextStyle(color: primaryColor.withOpacity(0.6)),
-                  border: InputBorder.none,
-                  contentPadding:
-                      const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                ),
-                style: TextStyle(color: primaryColor),
-                maxLines: 3,
-                maxLength: 250,
-              ),
-            ),
-            const SizedBox(width: 8),
-            if (_captionFocusNode.hasFocus)
-              TextButton(
-                onPressed: () => FocusScope.of(context).unfocus(),
-                child: Text("OK",
-                    style: TextStyle(
-                        color: primaryColor, fontWeight: FontWeight.bold)),
-              ),
-          ],
+    // Clamp progress to 0–1 so the indicator never overflows.
+    final double progress = (charCount / 250).clamp(0.0, 1.0);
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isOverLimit
+              ? Colors.red.withOpacity(0.6)
+              : Colors.white.withOpacity(0.08),
+          width: 1,
         ),
-        if (isNearLimit)
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ── Avatar + text field row ──────────────────────────────────
           Padding(
-            padding: const EdgeInsets.only(left: 56.0, top: 4.0),
-            child: Text(
-              '${_descriptionController.text.length}/250',
-              style: TextStyle(
-                color: isOverLimit ? Colors.red : primaryColor.withOpacity(0.6),
-                fontSize: 12,
-              ),
+            padding: const EdgeInsets.fromLTRB(12, 12, 8, 0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Avatar
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.12),
+                      width: 1.5,
+                    ),
+                  ),
+                  child: ClipOval(
+                    child: (user.photoUrl?.isNotEmpty == true &&
+                            user.photoUrl != 'default')
+                        ? Image.network(user.photoUrl!, fit: BoxFit.cover)
+                        : Icon(Icons.account_circle,
+                            size: 38, color: primaryColor),
+                  ),
+                ),
+
+                const SizedBox(width: 10),
+
+                // Username + text field stacked
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Username label
+                      Text(
+                        user.username ?? '',
+                        style: TextStyle(
+                          color: primaryColor,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.1,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      // Caption field
+                      TextField(
+                        controller: _descriptionController,
+                        focusNode: _captionFocusNode,
+                        style: TextStyle(
+                          color: primaryColor,
+                          fontSize: 14,
+                          height: 1.45,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: 'Write a caption…',
+                          hintStyle: TextStyle(
+                            color: Colors.white.withOpacity(0.28),
+                            fontSize: 14,
+                          ),
+                          border: InputBorder.none,
+                          isDense: true,
+                          contentPadding: EdgeInsets.zero,
+                          counterText: '', // hide the default counter
+                        ),
+                        maxLines: 4,
+                        minLines: 2,
+                        maxLength: 250,
+                        textInputAction: TextInputAction.newline,
+                        keyboardType: TextInputType.multiline,
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Dismiss keyboard button
+                if (_captionFocusNode.hasFocus)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, top: 2),
+                    child: GestureDetector(
+                      onTap: () => FocusScope.of(context).unfocus(),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.09),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          'Done',
+                          style: TextStyle(
+                            color: primaryColor,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
-      ],
+
+          // ── Divider + character counter ──────────────────────────────
+          if (isNearLimit) ...[
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(2),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 2,
+                  backgroundColor: Colors.white.withOpacity(0.08),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    isOverLimit ? Colors.red : Colors.white.withOpacity(0.55),
+                  ),
+                ),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 10),
+
+          // ── Bottom bar: hint text + counter ─────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.tag_rounded,
+                  color: Colors.white.withOpacity(0.2),
+                  size: 13,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'Add hashtags to reach more people',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.22),
+                    fontSize: 11,
+                  ),
+                ),
+                const Spacer(),
+                if (isNearLimit)
+                  Text(
+                    '$charCount / 250',
+                    style: TextStyle(
+                      color: isOverLimit
+                          ? Colors.red
+                          : Colors.white.withOpacity(0.38),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -740,14 +864,18 @@ class _AddPostScreenState extends State<AddPostScreen>
 
     if (user == null) {
       return Scaffold(
+        backgroundColor: mobileBackgroundColor,
         body: Center(child: CircularProgressIndicator(color: primaryColor)),
       );
     }
 
     return Scaffold(
+      // Ensures the area behind the image is always dark, never white.
+      backgroundColor: mobileBackgroundColor,
       appBar: AppBar(
         iconTheme: IconThemeData(color: primaryColor),
         backgroundColor: mobileBackgroundColor,
+        elevation: 0,
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: primaryColor),
           onPressed: () {
@@ -773,27 +901,23 @@ class _AddPostScreenState extends State<AddPostScreen>
             )
           : SingleChildScrollView(
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Loading bar
                   if (isLoading)
                     LinearProgressIndicator(
                       color: primaryColor,
                       backgroundColor: primaryColor.withOpacity(0.2),
                     ),
-                  if (!_isVideo && _file != null)
-                    Container(
-                      height: MediaQuery.of(context).size.height * 0.5,
-                      decoration: BoxDecoration(
-                        color: Colors.black,
-                        border: Border.all(color: primaryColor),
-                      ),
-                      child: Image.memory(_file!, fit: BoxFit.cover),
-                    ),
-                  if (_isVideo && _videoFile != null)
-                    _buildVideoPreview(),
-                  Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: _buildCaptionInput(user),
-                  ),
+
+                  // ── Image preview — full width, no white gaps ──────────
+                  if (!_isVideo && _file != null) _buildImagePreview(),
+
+                  // ── Video preview ──────────────────────────────────────
+                  if (_isVideo && _videoFile != null) _buildVideoPreview(),
+
+                  // ── Caption card ───────────────────────────────────────
+                  _buildCaptionInput(user),
                 ],
               ),
             ),
