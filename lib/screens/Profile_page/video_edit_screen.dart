@@ -106,6 +106,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   static const double _topBarH = 56.0;
   static const double _panelH = 212.0;
 
+  // Maximum selectable trim duration in milliseconds.
+  static const double _maxTrimMs = 15000.0;
+
   // ===========================================================================
   // LIFECYCLE
   // ===========================================================================
@@ -899,7 +902,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             trimmer: _trimmer,
             viewerHeight: 70,
             viewerWidth: MediaQuery.of(context).size.width - 16,
-            maxVideoLength: const Duration(seconds: 60),
+            // ── Hard cap: users may select at most 15 seconds. ──────────────
+            maxVideoLength: const Duration(seconds: 15),
             editorProperties: TrimEditorProperties(
               circleSize: 12,
               borderWidth: 4,
@@ -911,10 +915,16 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             ),
             onChangeStart: (v) {
               _startValue = v;
+              // Keep the window at most 15 s wide when the left handle moves.
+              if (_endValue - _startValue > _maxTrimMs) {
+                _endValue = _startValue + _maxTrimMs;
+              }
               _trimDirty = true;
             },
             onChangeEnd: (v) {
-              _endValue = v;
+              // Clamp so the selected segment never exceeds 15 seconds.
+              _endValue =
+                  v > _startValue + _maxTrimMs ? _startValue + _maxTrimMs : v;
               _trimDirty = true;
             },
             onChangePlaybackState: (p) {
