@@ -1,4 +1,3 @@
-// lib/screens/Profile_page/media_edit_screen.dart
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
@@ -506,79 +505,81 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                   onPanEnd: _activeTab == _Tab.draw ? _onDrawEnd : null,
                   child: RepaintBoundary(
                     key: _previewKey,
-                    child: Stack(children: [
-                      // Filtered image — uses _editBytes so the cropped
-                      // result is immediately visible in the preview.
-                      Positioned.fill(
-                        child: ColorFiltered(
-                          colorFilter: ColorFilter.matrix(_matrix),
-                          child: Transform.rotate(
-                              angle: _rotationQuarters * 3.14159265 / 2,
-                              child: Image.memory(_editBytes,
-                                  fit: BoxFit.contain,
-                                  width: double.infinity,
-                                  height: double.infinity)),
-                        ),
-                      ),
-
-                      // Blur overlay
-                      if (_blurType != BlurType.none)
+                    child: Stack(
+                      children: [
+                        // ✅ SOLID BLACK BACKGROUND – FIXES WHITE BORDERS
                         Positioned.fill(
-                            child: BlurOverlay(
-                          imageBytes: _editBytes,
-                          blurType: _blurType,
-                          blurIntensity: _blurIntensity,
-                        )),
-
-                      // Drawing layer
-                      Positioned.fill(
-                        child: CustomPaint(
-                          painter: DrawingPainter(
-                            strokes: _strokes,
-                            currentStroke: _currentStroke,
+                          child: Container(color: Colors.black),
+                        ),
+                        // Filtered image
+                        Positioned.fill(
+                          child: ColorFiltered(
+                            colorFilter: ColorFilter.matrix(_matrix),
+                            child: Transform.rotate(
+                                angle: _rotationQuarters * 3.14159265 / 2,
+                                child: Image.memory(_editBytes,
+                                    fit: BoxFit.contain,
+                                    width: double.infinity,
+                                    height: double.infinity)),
                           ),
                         ),
-                      ),
-
-                      // Text overlays
-                      ..._overlays.asMap().entries.map((entry) {
-                        final index = entry.key;
-                        final o = entry.value;
-                        final draggingThis = _dragIndex == index;
-                        return Positioned(
-                          left: (o.position.dx * screenSize.width)
-                              .clamp(0, screenSize.width - 10),
-                          top: (o.position.dy * imageH)
-                              .clamp(0, imageH - 10),
-                          child: GestureDetector(
-                            onTap: _activeTab != _Tab.draw
-                                ? () => setState(
-                                    () => _selectedOverlayIndex = index)
-                                : null,
-                            onPanStart: _activeTab != _Tab.draw
-                                ? (_) => _onDragStart(index)
-                                : null,
-                            onPanUpdate: _activeTab != _Tab.draw
-                                ? (d) => _onDragUpdate(
-                                    index, d, screenSize.width, imageH)
-                                : null,
-                            onPanEnd: _activeTab != _Tab.draw
-                                ? (_) => _onDragEnd(index, imageH)
-                                : null,
-                            child: AnimatedOpacity(
-                              opacity:
-                                  (draggingThis && _isOverTrash) ? 0.4 : 1.0,
-                              duration: const Duration(milliseconds: 100),
-                              child:
-                                  Stack(clipBehavior: Clip.none, children: [
-                                Text(o.text, style: overlayShadowStyle(o)),
-                                Text(o.text, style: overlayTextStyle(o)),
-                              ]),
+                        // Blur overlay
+                        if (_blurType != BlurType.none)
+                          Positioned.fill(
+                              child: BlurOverlay(
+                            imageBytes: _editBytes,
+                            blurType: _blurType,
+                            blurIntensity: _blurIntensity,
+                          )),
+                        // Drawing layer
+                        Positioned.fill(
+                          child: CustomPaint(
+                            painter: DrawingPainter(
+                              strokes: _strokes,
+                              currentStroke: _currentStroke,
                             ),
                           ),
-                        );
-                      }).toList(),
-                    ]),
+                        ),
+                        // Text overlays
+                        ..._overlays.asMap().entries.map((entry) {
+                          final index = entry.key;
+                          final o = entry.value;
+                          final draggingThis = _dragIndex == index;
+                          return Positioned(
+                            left: (o.position.dx * screenSize.width)
+                                .clamp(0, screenSize.width - 10),
+                            top: (o.position.dy * imageH)
+                                .clamp(0, imageH - 10),
+                            child: GestureDetector(
+                              onTap: _activeTab != _Tab.draw
+                                  ? () => setState(
+                                      () => _selectedOverlayIndex = index)
+                                  : null,
+                              onPanStart: _activeTab != _Tab.draw
+                                  ? (_) => _onDragStart(index)
+                                  : null,
+                              onPanUpdate: _activeTab != _Tab.draw
+                                  ? (d) => _onDragUpdate(
+                                      index, d, screenSize.width, imageH)
+                                  : null,
+                              onPanEnd: _activeTab != _Tab.draw
+                                  ? (_) => _onDragEnd(index, imageH)
+                                  : null,
+                              child: AnimatedOpacity(
+                                opacity:
+                                    (draggingThis && _isOverTrash) ? 0.4 : 1.0,
+                                duration: const Duration(milliseconds: 100),
+                                child:
+                                    Stack(clipBehavior: Clip.none, children: [
+                                  Text(o.text, style: overlayShadowStyle(o)),
+                                  Text(o.text, style: overlayTextStyle(o)),
+                                ]),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ],
+                    ),
                   ),
                 ),
               ),
