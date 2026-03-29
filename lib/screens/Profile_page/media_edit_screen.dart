@@ -174,21 +174,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   void _rotate() =>
       setState(() => _rotationQuarters = (_rotationQuarters + 1) % 4);
 
-  Uint8List _applyRotation(Uint8List bytes) {
-    if (_rotationQuarters == 0) return bytes;
-
-    var decoded = img.decodeImage(bytes);
-    if (decoded == null) return bytes;
-
-    for (int i = 0; i < _rotationQuarters; i++) {
-      decoded = img.copyRotate(decoded!, angle: 90);
-    }
-
-    return decoded != null
-        ? Uint8List.fromList(img.encodeJpg(decoded, quality: 92))
-        : bytes;
-  }
-
   // ===========================================================================
   // CROP — eager application (called when user presses "Done")
   // ===========================================================================
@@ -398,16 +383,16 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
 
   Future<void> _onNext() async {
     try {
-      final rendered  = await _renderFinalImage();
-      // Crop is already baked into _editBytes at this point;
-      // only rotation still needs to be applied post-render.
-      final processed = _applyRotation(rendered);
+      // The RepaintBoundary already captures the Transform.rotate applied
+      // inside it, so the rotation is baked into `rendered`. Calling
+      // _applyRotation a second time would rotate the image twice.
+      final rendered = await _renderFinalImage();
       if (mounted) {
         Navigator.push(
             context,
             MaterialPageRoute(
               builder: (_) => AddPostScreen(
-                  initialFile: processed,
+                  initialFile: rendered,
                   onPostUploaded: widget.onPostUploaded),
             ));
       }
