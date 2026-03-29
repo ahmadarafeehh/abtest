@@ -641,7 +641,6 @@ class _AddPostScreenState extends State<AddPostScreen>
       height: MediaQuery.of(context).size.height * 0.5,
       child: Image.memory(
         _file!,
-        // cover fills the box completely — no white letterbox bars
         fit: BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
@@ -650,7 +649,7 @@ class _AddPostScreenState extends State<AddPostScreen>
   }
 
   // ===========================================================================
-  // CAPTION SECTION — polished redesign (with character counter)
+  // CAPTION SECTION
   // ===========================================================================
 
   Widget _buildPostButton(bool isLoading, VoidCallback onPressed) {
@@ -817,40 +816,26 @@ class _AddPostScreenState extends State<AddPostScreen>
 
           const SizedBox(height: 10),
 
-          // ── Bottom bar: hint text + counter ─────────────────────────
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.tag_rounded,
-                  color: Colors.white.withOpacity(0.2),
-                  size: 13,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  'Add hashtags to reach more people',
+          // ── Bottom bar: character counter (only when near limit) ───────
+          if (isNearLimit)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  '$charCount / 250',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.22),
+                    color: isOverLimit
+                        ? Colors.red
+                        : Colors.white.withOpacity(0.38),
                     fontSize: 11,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                const Spacer(),
-                // Character counter text (shown when near limit)
-                if (isNearLimit)
-                  Text(
-                    '$charCount / 250',
-                    style: TextStyle(
-                      color: isOverLimit
-                          ? Colors.red
-                          : Colors.white.withOpacity(0.38),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-              ],
-            ),
-          ),
+              ),
+            )
+          else
+            const SizedBox(height: 0),
         ],
       ),
     );
@@ -872,7 +857,6 @@ class _AddPostScreenState extends State<AddPostScreen>
     }
 
     return Scaffold(
-      // Ensures the area behind the image is always dark, never white.
       backgroundColor: mobileBackgroundColor,
       appBar: AppBar(
         iconTheme: IconThemeData(color: primaryColor),
@@ -912,7 +896,7 @@ class _AddPostScreenState extends State<AddPostScreen>
                       backgroundColor: primaryColor.withOpacity(0.2),
                     ),
 
-                  // ── Image preview — full width, no white gaps ──────────
+                  // ── Image preview ──────────────────────────────────────
                   if (!_isVideo && _file != null) _buildImagePreview(),
 
                   // ── Video preview ──────────────────────────────────────
