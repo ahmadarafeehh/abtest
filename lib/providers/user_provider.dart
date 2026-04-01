@@ -199,8 +199,7 @@ class UserProvider with ChangeNotifier {
         // manually loaded user (e.g. dev bypass), do NOT wipe them.
         // Remove this block before releasing to production.
         if (_user != null) {
-          print(
-              '[UserProvider] refreshUser: no auth session but dev user is loaded — skipping clear');
+          // DEV MODE: skip clear
           return;
         }
         // =====================================================================
