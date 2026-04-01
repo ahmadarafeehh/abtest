@@ -10,16 +10,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/utils/global_variable.dart';
-import 'package:Ratedly/screens/feed/post_card.dart';
+import 'package:Ratedly/screens/feed/post_card.dart' hide unawaited;
 import 'package:Ratedly/screens/comment_screen.dart';
 import 'package:Ratedly/widgets/feedmessages.dart';
 import 'package:Ratedly/services/ads.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
-import 'package:Ratedly/services/feed_cache_service.dart';
+import 'package:Ratedly/services/feed_cache_service.dart' hide unawaited;
 import 'package:video_player/video_player.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:Ratedly/providers/user_provider.dart';
+import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 
 class _ColorSet {
   final Color textColor;
@@ -62,8 +63,6 @@ class _LightColors extends _ColorSet {
           progressIndicatorColor: Colors.grey[700]!,
         );
 }
-
-void _unawaited(Future<void> future) {}
 
 // =============================================================================
 // ERROR LOGGING HELPER
@@ -154,8 +153,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   int _currentVisibleIndex = 0;
   static const int _visiblePostsCount = 3;
 
+  // ⚡ Use the same batch size as the original A (10) for the RPC call.
   static const int _initialBatchSize = 10;
-  static const int _subsequentBatchSize = 10;
 
   bool _essentialUiReady = false;
   bool _showOverlay = true;
@@ -168,6 +167,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   bool _cacheLoadAttempted = false;
   bool _cacheLoaded = false;
   Timer? _delayedCacheUpdateTimer;
+
+  bool _followingIdsLoaded = false;
 
   _ColorSet _getColors(ThemeProvider themeProvider) {
     final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
@@ -263,14 +264,12 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         lowerUrl.contains('image/jpeg') ||
         lowerUrl.contains('image/png');
 
-    final result = hasImageExtension ||
+    return hasImageExtension ||
         hasImagePath ||
         isSupabaseImage ||
         isFirebaseImage ||
         hasThumbnailPattern ||
         hasImageQueryParam;
-
-    return result;
   }
 
   bool _isFirebaseStorageUrl(String url) {
@@ -315,6 +314,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _preloadAllMediaForPost(Map<String, dynamic> post) async {
+    final startTime = DateTime.now().millisecondsSinceEpoch;
     final postId = post['postId']?.toString() ?? '';
     final postUrl = post['postUrl']?.toString() ?? '';
 
@@ -331,7 +331,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     int mediaToPreload = 0;
     int mediaPreloaded = 0;
 
-    void _checkCompletion() {
+    void checkCompletion() {
       mediaPreloaded++;
 
       if (mediaPreloaded >= mediaToPreload && !completer.isCompleted) {
@@ -354,10 +354,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       try {
         if (_feedVideoControllers.containsKey(postUrl) &&
             _feedVideoControllersInitialized[postUrl] == true) {
-          _checkCompletion();
+          checkCompletion();
         } else {
           await _initializeFeedVideoController(postUrl, postId);
-          _checkCompletion();
+          checkCompletion();
         }
       } catch (e, stack) {
         await _logFeedError(
@@ -366,7 +366,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           stack: stack,
           additionalData: {'postId': postId, 'postUrl': postUrl},
         );
-        _checkCompletion();
+        checkCompletion();
       }
     }
 
@@ -377,7 +377,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           mediaToPreload++;
 
           _preloadImage(imageUrl, postId).then((_) {
-            _checkCompletion();
+            checkCompletion();
           }).catchError((e, stack) async {
             await _logFeedError(
               operation: '_preloadAllMediaForPost/image',
@@ -385,7 +385,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               stack: stack,
               additionalData: {'postId': postId, 'imageUrl': imageUrl},
             );
-            _checkCompletion();
+            checkCompletion();
           });
         }
       }
@@ -421,14 +421,12 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           !_postsFullyPreloaded.contains(postId);
     }).toList();
 
-    if (postsToPreload.isEmpty) {
-      return;
-    }
+    if (postsToPreload.isEmpty) return;
 
     for (final post in postsToPreload) {
       final postId = post['postId']?.toString() ?? '';
       if (postId.isNotEmpty) {
-        _unawaited(_preloadAllMediaForPost(post));
+        unawaited(_preloadAllMediaForPost(post));
       }
     }
   }
@@ -436,9 +434,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   Future<void> _preloadImage(String imageUrl, String postId) async {
     if (imageUrl.isEmpty) return;
 
-    if (_imagePreloaded[imageUrl] == true) {
-      return;
-    }
+    if (_imagePreloaded[imageUrl] == true) return;
 
     try {
       _imagePreloaded[imageUrl] = false;
@@ -472,7 +468,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       if (imageBytes != null && imageBytes.isNotEmpty) {
         final imageProvider = MemoryImage(imageBytes);
         await _loadImageIntoMemory(imageProvider);
-
         _loadedImageProviders[imageUrl] = imageProvider;
         _imagePreloaded[imageUrl] = true;
       } else {
@@ -515,7 +510,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         if (imageBytes != null && imageBytes.isNotEmpty) {
           final imageProvider = MemoryImage(imageBytes);
           await _loadImageIntoMemory(imageProvider);
-
           _loadedImageProviders[imageUrl] = imageProvider;
           _imagePreloaded[imageUrl] = true;
         }
@@ -545,7 +539,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
         final imageProvider = FileImage(file);
         await _loadImageIntoMemory(imageProvider);
-
         _loadedImageProviders[imageUrl] = imageProvider;
         _imagePreloaded[imageUrl] = true;
       } else {
@@ -642,9 +635,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: true,
-        ),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
 
       _feedVideoControllers[videoUrl] = controller;
@@ -670,9 +661,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       );
       try {
         final controller = _feedVideoControllers.remove(videoUrl);
-        if (controller != null) {
-          controller.dispose();
-        }
+        if (controller != null) controller.dispose();
       } catch (disposeError) {}
 
       _feedVideoControllersInitialized.remove(videoUrl);
@@ -748,9 +737,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         final postUrl = post['postUrl']?.toString() ?? '';
         final imageUrls = _getAllImageUrlsFromPost(post);
 
-        if (postUrl.isNotEmpty) {
-          preloadedUrls.add(postUrl);
-        }
+        if (postUrl.isNotEmpty) preloadedUrls.add(postUrl);
         for (final imageUrl in imageUrls) {
           preloadedUrls.add(imageUrl);
         }
@@ -769,9 +756,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         }
       }
 
-      final isInVisibleRange = preloadedUrls.contains(url);
-
-      if (!isInAnyPost && !isInVisibleRange) {
+      if (!isInAnyPost && !preloadedUrls.contains(url)) {
         videoUrlsToRemove.add(url);
       }
     }
@@ -909,12 +894,13 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _loadCachedPostsLightningFast() async {
-    if (_cacheLoadAttempted) {
-      return;
-    }
+    if (_cacheLoadAttempted) return;
 
     _cacheLoadAttempted = true;
 
+    if (currentUserId == null || currentUserId!.isEmpty) {
+      currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    }
     if (currentUserId == null || currentUserId!.isEmpty) {
       _essentialUiReady = true;
       if (mounted) setState(() {});
@@ -939,7 +925,11 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               _postsBeingPreloaded.clear();
               _postsFullyPreloaded.clear();
 
-              _preloadAllMediaForPosts(cachedPosts);
+              // Preload only first 3 posts for faster initial paint
+              final toPreload = cachedPosts.length > 3
+                  ? cachedPosts.sublist(0, 3)
+                  : cachedPosts;
+              _preloadAllMediaForPosts(toPreload);
 
               if (_forYouPosts.isNotEmpty) {
                 final firstPost = _forYouPosts.first;
@@ -1092,7 +1082,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         if (postId.isNotEmpty) {
           _postVisibility[postId] = true;
           newPlayingPostId = postId;
-          _unawaited(_scheduleViewRecording(postId));
+          unawaited(_scheduleViewRecording(postId));
 
           if (page == 0 && isForYou && !_firstVideoInitialized) {
             _firstVideoInitialized = true;
@@ -1129,7 +1119,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     if (isForYou) {
-      _unawaited(_delayedCacheUpdate());
+      unawaited(_delayedCacheUpdate());
     }
   }
 
@@ -1355,10 +1345,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             userProvider.firebaseUid ?? userProvider.supabaseUid ?? '';
       }
 
-      if (_cacheLoaded) {
-        await Future.delayed(Duration(milliseconds: 800));
-      }
-
       if (!_cacheLoadAttempted) {
         final cachedPosts =
             await FeedCacheService.loadCachedForYouPosts(currentUserId ?? '');
@@ -1376,7 +1362,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               _postsBeingPreloaded.clear();
               _postsFullyPreloaded.clear();
 
-              _preloadAllMediaForPosts(cachedPosts);
+              final toPreload = cachedPosts.length > 3
+                  ? cachedPosts.sublist(0, 3)
+                  : cachedPosts;
+              _preloadAllMediaForPosts(toPreload);
             }
           });
 
@@ -1391,34 +1380,33 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
                     _currentPlayingPostId = firstPostId;
                     _firstVideoInitialized = false;
                   });
-                  _unawaited(_scheduleViewRecording(firstPostId));
+                  unawaited(_scheduleViewRecording(firstPostId));
                   _updateVisiblePosts(0);
                 }
               });
             }
           }
 
-          _nextForYouBatch = await _loadNextForYouBatch();
-          _nextBatchLoaded = true;
+          unawaited(() async {
+            _nextForYouBatch = await _loadNextForYouBatch();
+            _nextBatchLoaded = true;
+          }());
+
           return;
         }
       }
 
       if (_essentialUiReady && _forYouPosts.isNotEmpty) {
-        _nextForYouBatch = await _loadNextForYouBatch();
-        _nextBatchLoaded = true;
+        unawaited(() async {
+          _nextForYouBatch = await _loadNextForYouBatch();
+          _nextBatchLoaded = true;
+        }());
 
         if (currentUserId == null || currentUserId!.isEmpty) {
           _blockedUsers = [];
-          _followingIds = [];
-          await _loadData();
-          return;
+        } else {
+          await _loadBlockedUsers();
         }
-
-        await Future.wait([
-          _loadBlockedUsers(),
-          _loadFollowingIds(),
-        ]);
 
         await _loadData();
 
@@ -1436,7 +1424,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
                     _currentPlayingPostId = firstPostId;
                     _firstVideoInitialized = true;
                   });
-                  _unawaited(_scheduleViewRecording(firstPostId));
+                  unawaited(_scheduleViewRecording(firstPostId));
                   _updateVisiblePosts(0);
                 }
               });
@@ -1448,15 +1436,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
       if (currentUserId == null || currentUserId!.isEmpty) {
         _blockedUsers = [];
-        _followingIds = [];
-        await _loadData();
-        return;
+      } else {
+        await _loadBlockedUsers();
       }
-
-      await Future.wait([
-        _loadBlockedUsers(),
-        _loadFollowingIds(),
-      ]);
 
       await _loadData();
     } catch (e, stack) {
@@ -1479,9 +1461,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   Future<List<Map<String, dynamic>>> _loadNextForYouBatch() async {
     final userId = currentUserId;
-    if (userId == null || userId.isEmpty) {
-      return [];
-    }
+    if (userId == null || userId.isEmpty) return [];
 
     try {
       final excludedUsers = [..._blockedUsers, userId];
@@ -1495,7 +1475,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
       final response = _unwrapResponse(responseRaw);
       if (response is List) {
-        return response.map<Map<String, dynamic>>((post) {
+        final result = response.map<Map<String, dynamic>>((post) {
           final Map<String, dynamic> convertedPost = {};
           (post as Map).forEach((key, value) {
             if (key.toString() == 'postScore') {
@@ -1507,6 +1487,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           convertedPost['postId'] = convertedPost['postId']?.toString();
           return convertedPost;
         }).toList();
+        return result;
       }
     } catch (e, stack) {
       await _logFeedError(
@@ -1602,14 +1583,18 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _offsetForYou += newPosts.length;
         _hasMoreForYou = newPosts.isNotEmpty;
 
-        _nextForYouBatch = await _loadNextForYouBatch();
-        _nextBatchLoaded = true;
+        unawaited(() async {
+          _nextForYouBatch = await _loadNextForYouBatch();
+          _nextBatchLoaded = true;
+        }());
       }
 
       if (!loadMore) {
         _postsBeingPreloaded.clear();
         _postsFullyPreloaded.clear();
-        _preloadAllMediaForPosts(newPosts);
+        final toPreload =
+            newPosts.length > 3 ? newPosts.sublist(0, 3) : newPosts;
+        _preloadAllMediaForPosts(toPreload);
       } else {
         _preloadAllMediaForPosts(newPosts);
       }
@@ -1617,8 +1602,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       for (final post in newPosts) {
         _cachePost(post);
       }
-
-      await _bulkFetchUsers(newPosts);
 
       if (mounted) {
         setState(() {
@@ -1630,6 +1613,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           }
           _isLoadingMore = false;
         });
+
+        unawaited(_bulkFetchUsers(newPosts));
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && !loadMore) {
@@ -1649,7 +1634,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
                   _currentPlayingPostId = firstPostId;
                   _firstVideoInitialized = false;
                 });
-                _unawaited(_scheduleViewRecording(firstPostId));
+                unawaited(_scheduleViewRecording(firstPostId));
               }
             }
           }
@@ -1718,16 +1703,27 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _followingPosts.clear();
       _hasMoreFollowing = true;
       _currentFollowingPage = 0;
+
+      if (!_followingIdsLoaded) {
+        _followingIdsLoaded = true;
+        _loadFollowingIds().then((_) => _loadData()).then((_) {
+          if (mounted) setState(() => _isLoading = false);
+        });
+      } else {
+        _loadData().then((_) {
+          if (mounted) setState(() => _isLoading = false);
+        });
+      }
     } else {
       _offsetForYou = 0;
       _forYouPosts.clear();
       _hasMoreForYou = true;
       _currentForYouPage = 0;
-    }
 
-    _loadData().then((_) {
-      if (mounted) setState(() => _isLoading = false);
-    });
+      _loadData().then((_) {
+        if (mounted) setState(() => _isLoading = false);
+      });
+    }
   }
 
   @override
@@ -1806,24 +1802,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildMinimalSkeleton(_ColorSet colors) {
-    return PageView.builder(
-      scrollDirection: Axis.vertical,
-      itemCount: 1,
-      itemBuilder: (ctx, index) {
-        return Container(
-            color: colors.backgroundColor,
-            child: Column(
-              children: [
-                Expanded(
-                  child: Container(
-                    color: colors.skeletonColor,
-                    margin: EdgeInsets.all(8),
-                  ),
-                ),
-              ],
-            ));
-      },
-    );
+    final isDark = colors.backgroundColor == const Color(0xFF121212);
+    return FeedSkeleton(isDark: isDark);
   }
 
   void _navigateToMessages() {
@@ -1865,13 +1845,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       body: Stack(
         children: [
           _buildFeedBody(colors),
-          if (_isLoading && _forYouPosts.isEmpty && _followingPosts.isEmpty)
-            Container(
-              color: colors.backgroundColor.withOpacity(0.7),
-              child: Center(
-                child: CircularProgressIndicator(color: colors.textColor),
-              ),
-            ),
           if (width <= webScreenSize)
             Positioned(
               top: MediaQuery.of(context).padding.top + 8,
@@ -1916,37 +1889,38 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     final bool isSelected = _selectedTab == index;
 
     return GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: () {
-          _switchTab(index);
-          _showInterstitialAd();
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 16,
-                  fontFamily: 'Inter',
-                ),
+      behavior: HitTestBehavior.translucent,
+      onTap: () {
+        _switchTab(index);
+        _showInterstitialAd();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+                fontFamily: 'Inter',
               ),
-              const SizedBox(height: 4),
-              Container(
-                height: 2,
-                width: 60,
-                decoration: BoxDecoration(
-                  color: isSelected ? Colors.white : Colors.transparent,
-                  borderRadius: BorderRadius.circular(1),
-                ),
+            ),
+            const SizedBox(height: 4),
+            Container(
+              height: 2,
+              width: 60,
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.white : Colors.transparent,
+                borderRadius: BorderRadius.circular(1),
               ),
-            ],
-          ),
-        ));
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildMessageButton(_ColorSet colors) {
@@ -2044,9 +2018,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildLoadingFeed(_ColorSet colors) {
-    return Center(
-      child: CircularProgressIndicator(color: colors.textColor),
-    );
+    final isDark = colors.backgroundColor == const Color(0xFF121212);
+    return FeedSkeleton(isDark: isDark);
   }
 
   Widget _buildNoFollowingMessage(_ColorSet colors) {
@@ -2079,13 +2052,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           final scrollDifference = currentOffset - _lastScrollOffset;
 
           if (scrollDifference > 5 && _showOverlay) {
-            setState(() {
-              _showOverlay = false;
-            });
+            setState(() => _showOverlay = false);
           } else if (scrollDifference < -5 && !_showOverlay) {
-            setState(() {
-              _showOverlay = true;
-            });
+            setState(() => _showOverlay = true);
           }
 
           _lastScrollOffset = currentOffset;
