@@ -175,49 +175,54 @@ class _PostCardState extends State<PostCard>
         AutomaticKeepAliveClientMixin<PostCard>,
         WidgetsBindingObserver,
         TickerProviderStateMixin {
+  // =========================================================================
+  // DATA FIELDS (now populated from RPC)
+  // =========================================================================
   late int _commentCount;
   bool _isBlocked = false;
   bool _viewRecorded = false;
   late RealtimeChannel _postChannel;
-  bool _isLoadingRatings = true;
+
+  // Ratings
   int _totalRatingsCount = 0;
   double _averageRating = 0.0;
   double? _userRating;
   bool _showSlider = true;
+  late List<Map<String, dynamic>> _localRatings;
+
+  // Profile / owner data
+  String? _resolvedProfImage; // actual photoUrl (might be video)
+  String? _ownerUsername; // from RPC
+  bool _isTestUser = true; // from RPC (viewer's test flag)
+
+  // Follow status
+  bool _isFollowing = false;
+  bool _hasPendingRequest = false;
+  bool _isLoadingFollow = false;
+  bool _showFollowBadge = false;
+
+  // Animations
+  late AnimationController _followAnimController;
+  late Animation<double> _followScaleAnim;
+  late AnimationController _tickAnimController;
+  late Animation<double> _tickAnim;
+
+  // UI / video state
+  bool _isCaptionExpanded = false;
+  bool _hasBeenSeen = false;
 
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
   bool _isVideoLoading = false;
   bool _isMuted = false;
 
-  bool _isCaptionExpanded = false;
-  bool _hasBeenSeen = false;
-
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = true;
 
-  late List<Map<String, dynamic>> _localRatings;
   final ApiService _apiService = ApiService();
   final VideoManager _videoManager = VideoManager();
   final SupabasePostsMethods _postsMethods = SupabasePostsMethods();
-
-  String? _resolvedProfImage;
-
-  bool _isFollowing = false;
-  bool _hasPendingRequest = false;
-  bool _isLoadingFollow = false;
-  bool _showFollowBadge = false;
-
-  late AnimationController _followAnimController;
-  late Animation<double> _followScaleAnim;
-  late AnimationController _tickAnimController;
-  late Animation<double> _tickAnim;
-
-  /// true  → viewer's `test` column is true  → show "Start the Rating"
-  /// false → viewer's `test` column is false → show "Be the first to rate"
-  /// Defaults to true (matches the DB column default).
-  bool _isTestUser = true;
 
   final List<String> _reportReasons = [
     'I just don\'t like it',
@@ -267,6 +272,9 @@ class _PostCardState extends State<PostCard>
   @override
   bool get wantKeepAlive => true;
 
+  // =========================================================================
+  // LIFECYCLE
+  // =========================================================================
   @override
   void initState() {
     super.initState();
@@ -282,23 +290,21 @@ class _PostCardState extends State<PostCard>
     _tickAnim =
         CurvedAnimation(parent: _tickAnimController, curve: Curves.easeOut);
 
+    // Initialise local ratings from widget.snap (if present)
     _localRatings = [];
     if (widget.snap['ratings'] != null) {
       _localRatings = (widget.snap['ratings'] as List<dynamic>)
           .map<Map<String, dynamic>>((r) => r as Map<String, dynamic>)
           .toList();
     }
-
+    // Fallback comment count from widget.snap
     _commentCount = (widget.snap['commentsCount'] ?? 0).toInt();
-    _setupRealtime();
-    _checkBlockStatus();
-    _recordView();
-    _fetchInitialRatings();
-    _fetchCommentsCount();
-    _loadFollowStatus();
-    _fetchResolvedProfImage();
-    _fetchTestFlag(); // ← fetches current user's test column
 
+    _setupRealtime(); // keeps realtime updates
+    _recordView(); // still separate – it's a write
+    _loadPostCardData(); // ONE RPC CALL replaces everything else
+
+    // Video handling (unchanged)
     if (_isVideo) {
       if (widget.preloadedVideoController != null && widget.isVideoPreloaded) {
         _videoController = widget.preloadedVideoController;
@@ -328,85 +334,269 @@ class _PostCardState extends State<PostCard>
         });
       }
     }
-
-    if (_isProfileVideo) {
-      _initializeProfileVideo();
-    }
   }
 
-  // ── Fetch the current viewer's `test` flag ─────────────────────────────
-  Future<void> _fetchTestFlag() async {
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _disposeVideoController();
+    _disposeProfileVideoController();
+    _postChannel.unsubscribe();
+    _followAnimController.dispose();
+    _tickAnimController.dispose();
+    if (_videoController != null && _isVideoPlaying) {
+      _videoManager.pauseVideo(_videoController!);
+    }
+    super.dispose();
+  }
+
+  // =========================================================================
+  // RPC DATA LOADING
+  // =========================================================================
+  Future<void> _loadPostCardData() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
     if (user == null) return;
-    try {
-      final result = await Supabase.instance.client
-          .from('users')
-          .select('test')
-          .eq('uid', user.uid)
-          .maybeSingle();
-      if (!mounted) return;
-      // DB default is true; treat null as true
-      final raw = result?['test'];
-      setState(() => _isTestUser = raw == null ? true : (raw as bool? ?? true));
-    } catch (_) {
-      // keep default (true)
-    }
-  }
 
-  Future<void> _fetchResolvedProfImage() async {
-    final postOwnerId = widget.snap['uid']?.toString() ?? '';
-    if (postOwnerId.isEmpty) return;
-    try {
-      final result = await Supabase.instance.client
-          .from('users')
-          .select('photoUrl')
-          .eq('uid', postOwnerId)
-          .maybeSingle();
-      final freshUrl = result?['photoUrl']?.toString() ?? '';
-      if (!mounted) return;
-      if (freshUrl.isNotEmpty &&
-          freshUrl != 'default' &&
-          freshUrl != (_resolvedProfImage ?? '')) {
-        setState(() => _resolvedProfImage = freshUrl);
-        if (_isProfileVideo && !_isProfileVideoInitialized) {
-          _initializeProfileVideo();
-        }
-      }
-    } catch (_) {}
-  }
+    final postId = _postId;
+    if (postId.isEmpty) return;
 
-  Future<void> _loadFollowStatus() async {
-    final user = Provider.of<UserProvider>(context, listen: false).user;
-    if (user == null) return;
-    final postOwnerId = widget.snap['uid']?.toString() ?? '';
-    if (postOwnerId.isEmpty || postOwnerId == user.uid) return;
     try {
-      final supabase = Supabase.instance.client;
-      final following = await supabase
-          .from('user_following')
-          .select()
-          .eq('user_id', user.uid)
-          .eq('following_id', postOwnerId)
-          .maybeSingle();
-      final pending = await supabase
-          .from('user_follow_request')
-          .select()
-          .eq('user_id', postOwnerId)
-          .eq('requester_id', user.uid)
-          .maybeSingle();
-      if (mounted) {
-        final isFollowing = following != null;
-        final hasPending = pending != null;
-        setState(() {
-          _isFollowing = isFollowing;
-          _hasPendingRequest = hasPending;
-          _showFollowBadge = !isFollowing && !hasPending;
-        });
+      final response = await Supabase.instance.client.rpc(
+        'get_post_card_data_text',
+        params: {
+          'p_post_id': _postId, // _postId is already a string (UUID as text)
+          'p_viewer_id': user.uid, // user.uid is text
+        },
+      );
+
+      if (!mounted) return;
+      final data = response as Map<String, dynamic>;
+
+      setState(() {
+        // Owner info
+        _resolvedProfImage = data['ownerPhotoUrl'];
+        _ownerUsername = data['ownerUsername'];
+        _isTestUser = data['viewerIsTestUser'] ?? true;
+
+        // Ratings
+        _totalRatingsCount = data['ratingsCount'] ?? 0;
+        _averageRating = (data['averageRating'] ?? 0.0).toDouble();
+        _userRating = data['userRating']?.toDouble();
+        _showSlider = _userRating == null; // true if no rating yet
+
+        // Convert allRatings JSON array to local list
+        final allRatings = data['allRatings'] as List? ?? [];
+        _localRatings = allRatings
+            .map<Map<String, dynamic>>((r) => r as Map<String, dynamic>)
+            .toList();
+
+        // Comments count
+        _commentCount = data['commentsCount'] ?? 0;
+
+        // Follow status
+        _isFollowing = data['isFollowing'] ?? false;
+        _hasPendingRequest = data['hasPendingRequest'] ?? false;
+        _showFollowBadge = !_isFollowing && !_hasPendingRequest;
         if (_showFollowBadge) _followAnimController.forward();
+
+        // Block status
+        _isBlocked = data['isBlocked'] ?? false;
+      });
+
+      // If the owner has a profile video, initialise it now that we have _resolvedProfImage
+      if (_isProfileVideo && !_isProfileVideoInitialized) {
+        _initializeProfileVideo();
       }
-    } catch (_) {}
+    } catch (e) {
+      // If the RPC fails, we fall back to the old separate queries (optional)
+      // but we can just leave fields as defaults and let realtime fill later.
+      // You could add a fallback to the old methods here, but the RPC should work.
+    }
   }
 
+  // =========================================================================
+  // REAL-TIME UPDATES (unchanged, but now uses the state fields)
+  // =========================================================================
+  void _setupRealtime() {
+    _postChannel =
+        Supabase.instance.client.channel('post_${widget.snap['postId']}');
+    _postChannel.onPostgresChanges(
+      event: PostgresChangeEvent.all,
+      schema: 'public',
+      table: 'post_rating',
+      filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'postid',
+          value: widget.snap['postId']),
+      callback: (payload) => _handleRatingUpdate(payload),
+    );
+    _postChannel.onPostgresChanges(
+      event: PostgresChangeEvent.all,
+      schema: 'public',
+      table: 'comments',
+      filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'postid',
+          value: widget.snap['postId']),
+      callback: (payload) => _refreshCommentCount(),
+    );
+    _postChannel.onPostgresChanges(
+      event: PostgresChangeEvent.all,
+      schema: 'public',
+      table: 'replies',
+      filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'postid',
+          value: widget.snap['postId']),
+      callback: (payload) => _refreshCommentCount(),
+    );
+    _postChannel.subscribe();
+  }
+
+  void _refreshCommentCount() async {
+    // Fetch fresh counts from DB
+    try {
+      final commentsResponse = await Supabase.instance.client
+          .from('comments')
+          .select('id')
+          .eq('postid', widget.snap['postId']);
+      final repliesResponse = await Supabase.instance.client
+          .from('replies')
+          .select('id')
+          .eq('postid', widget.snap['postId']);
+      final int total = commentsResponse.length + repliesResponse.length;
+      if (mounted) setState(() => _commentCount = total);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  void _handleRatingUpdate(PostgresChangePayload payload) {
+    final newRecord = payload.newRecord;
+    final oldRecord = payload.oldRecord;
+    final eventType = payload.eventType;
+    setState(() {
+      switch (eventType) {
+        case PostgresChangeEvent.insert:
+          if (newRecord != null) {
+            _localRatings.insert(0, newRecord);
+            _totalRatingsCount++;
+            _updateAverageRating();
+            final user = Provider.of<UserProvider>(context, listen: false).user;
+            if (user != null && newRecord['userid'] == user.uid) {
+              _showSlider = false;
+              _userRating = (newRecord['rating'] as num).toDouble();
+            }
+          }
+          break;
+        case PostgresChangeEvent.update:
+          if (oldRecord != null && newRecord != null) {
+            final index = _localRatings
+                .indexWhere((r) => r['userid'] == oldRecord['userid']);
+            if (index != -1) _localRatings[index] = newRecord;
+            _updateAverageRating();
+            final user = Provider.of<UserProvider>(context, listen: false).user;
+            if (user != null && newRecord['userid'] == user.uid) {
+              _userRating = (newRecord['rating'] as num).toDouble();
+            }
+          }
+          break;
+        case PostgresChangeEvent.delete:
+          if (oldRecord != null) {
+            _localRatings
+                .removeWhere((r) => r['userid'] == oldRecord['userid']);
+            _totalRatingsCount--;
+            _updateAverageRating();
+            final user = Provider.of<UserProvider>(context, listen: false).user;
+            if (user != null && oldRecord['userid'] == user.uid) {
+              _showSlider = true;
+              _userRating = null;
+            }
+          }
+          break;
+        default:
+          break;
+      }
+    });
+    if (widget.onRateUpdate != null) {
+      widget.onRateUpdate!({
+        ...widget.snap,
+        'userRating': _userRating,
+        'averageRating': _averageRating,
+        'totalRatingsCount': _totalRatingsCount,
+        'ratings': _localRatings,
+        'showSlider': _showSlider,
+      });
+    }
+  }
+
+  void _updateAverageRating() {
+    if (_localRatings.isEmpty) {
+      setState(() => _averageRating = 0.0);
+      return;
+    }
+    final total = _localRatings.fold(
+        0.0, (sum, r) => sum + (r['rating'] as num).toDouble());
+    setState(() => _averageRating = total / _localRatings.length);
+  }
+
+  // =========================================================================
+  // RATING UI METHODS (unchanged)
+  // =========================================================================
+  void _handleRatingSubmitted(double rating) async {
+    final user = Provider.of<UserProvider>(context, listen: false).user;
+    if (user == null) return;
+    final double? oldUserRating = _userRating;
+    final bool isUpdating = oldUserRating != null;
+    setState(() {
+      _userRating = rating;
+      _showSlider = false;
+      final currentTotal = _averageRating * _totalRatingsCount;
+      if (isUpdating) {
+        _averageRating =
+            (currentTotal - oldUserRating! + rating) / _totalRatingsCount;
+      } else {
+        _totalRatingsCount++;
+        _averageRating = (currentTotal + rating) / _totalRatingsCount;
+      }
+      final idx = _localRatings.indexWhere((r) => r['userid'] == user.uid);
+      if (idx != -1) {
+        _localRatings[idx]['rating'] = rating;
+        _localRatings[idx]['timestamp'] = DateTime.now().toIso8601String();
+      } else {
+        _localRatings.add({
+          'userid': user.uid,
+          'postid': widget.snap['postId'],
+          'rating': rating,
+          'timestamp': DateTime.now().toIso8601String(),
+        });
+      }
+    });
+    if (widget.onRateUpdate != null) {
+      widget.onRateUpdate!({
+        ...widget.snap,
+        'userRating': rating,
+        'averageRating': _averageRating,
+        'totalRatingsCount': _totalRatingsCount,
+        'ratings': _localRatings,
+        'showSlider': false,
+      });
+    }
+    try {
+      final success =
+          await _postsMethods.ratePost(widget.snap['postId'], user.uid, rating);
+      if (success != 'success' && mounted)
+        _loadPostCardData(); // fallback reload
+    } catch (e) {
+      if (mounted) _loadPostCardData();
+    }
+  }
+
+  void _handleEditRating() => setState(() => _showSlider = true);
+
+  // =========================================================================
+  // FOLLOW / BLOCK HANDLERS (unchanged but now use state fields)
+  // =========================================================================
   Future<void> _handleFollowTap() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
     if (user == null || _isLoadingFollow) return;
@@ -480,6 +670,18 @@ class _PostCardState extends State<PostCard>
     }
   }
 
+  // =========================================================================
+  // VIEW RECORDING (unchanged)
+  // =========================================================================
+  void _recordView() async {
+    if (_viewRecorded) return;
+    final user = Provider.of<UserProvider>(context, listen: false).user;
+    if (user != null) {
+      await _apiService.recordPostView(widget.snap['postId'], user.uid);
+      if (mounted) setState(() => _viewRecorded = true);
+    }
+  }
+
   void _markPostAsSeenIfVisible() {
     if (widget.isVisible && !_hasBeenSeen && widget.onPostSeen != null) {
       _hasBeenSeen = true;
@@ -487,121 +689,9 @@ class _PostCardState extends State<PostCard>
     }
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      _pauseVideo();
-      _pauseProfileVideo();
-    }
-  }
-
-  @override
-  void didUpdateWidget(PostCard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isVisible && !_hasBeenSeen && widget.onPostSeen != null) {
-      _markPostAsSeenIfVisible();
-    }
-    if (oldWidget.isVisible != widget.isVisible && _isVideo) {
-      if (widget.isVisible) {
-        if (_isVideoInitialized && !_isVideoPlaying) {
-          _playVideo();
-        } else if (!_isVideoInitialized && !_isVideoLoading) {
-          unawaited(_initializeVideoPlayer());
-        }
-      } else {
-        if (_isVideoInitialized && _isVideoPlaying) _pauseVideo();
-      }
-    }
-    if (oldWidget.isVisible != widget.isVisible && _isProfileVideo) {
-      if (widget.isVisible) {
-        if (_isProfileVideoInitialized) {
-          _playProfileVideo();
-        } else {
-          _initializeProfileVideo();
-        }
-      } else {
-        if (_isProfileVideoInitialized) _pauseProfileVideo();
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _disposeVideoController();
-    _disposeProfileVideoController();
-    _postChannel.unsubscribe();
-    _followAnimController.dispose();
-    _tickAnimController.dispose();
-    if (_videoController != null && _isVideoPlaying) {
-      _videoManager.pauseVideo(_videoController!);
-    }
-    super.dispose();
-  }
-
-  void _disposeVideoController() {
-    if (_videoController != null) {
-      _videoController!.removeListener(_videoListener);
-      if (widget.preloadedVideoController != null &&
-          widget.preloadedVideoController == _videoController) {
-        if (_videoController!.value.isPlaying) _videoController!.pause();
-      } else {
-        if (_isVideoPlaying) _videoManager.pauseVideo(_videoController!);
-        try {
-          _videoController!.pause();
-          _videoController!.dispose();
-        } catch (e) {}
-      }
-      _videoController = null;
-    }
-    _isVideoInitialized = false;
-    _isVideoLoading = false;
-  }
-
-  void _disposeProfileVideoController() {
-    if (_profileVideoController != null) {
-      _profileVideoController!.removeListener(_profileVideoListener);
-      _profileVideoController!.pause();
-      _profileVideoController!.dispose();
-      _profileVideoController = null;
-    }
-    _isProfileVideoInitialized = false;
-  }
-
-  void _videoListener() {
-    if (!mounted) return;
-    if (_videoController != null &&
-        _videoController!.value.position == _videoController!.value.duration &&
-        _videoController!.value.duration != Duration.zero) {
-      _videoController!.seekTo(Duration.zero);
-      if (widget.isVisible && !_isVideoPlaying) _videoController!.play();
-    }
-    if (_videoController != null && _isVideoInitialized) {
-      final isActuallyPlaying = _videoController!.value.isPlaying;
-      final shouldBePlaying =
-          _videoManager.isCurrentlyPlaying(_videoController!);
-      if (isActuallyPlaying != shouldBePlaying && widget.isVisible) {
-        if (shouldBePlaying && !isActuallyPlaying) {
-          _videoController!.play();
-        } else if (!shouldBePlaying && isActuallyPlaying) {
-          _videoController!.pause();
-        }
-      }
-    }
-  }
-
-  void _profileVideoListener() {
-    if (!mounted) return;
-    if (_profileVideoController != null &&
-        _profileVideoController!.value.position ==
-            _profileVideoController!.value.duration &&
-        _profileVideoController!.value.duration != Duration.zero) {
-      _profileVideoController!.seekTo(Duration.zero);
-      if (widget.isVisible) _profileVideoController!.play();
-    }
-  }
-
+  // =========================================================================
+  // VIDEO / PROFILE VIDEO HANDLERS (unchanged)
+  // =========================================================================
   Future<void> _initializeVideoPlayer() async {
     if (_isVideoLoading || _isVideoInitialized) return;
     setState(() => _isVideoLoading = true);
@@ -634,75 +724,44 @@ class _PostCardState extends State<PostCard>
     }
   }
 
-  Future<void> _initializeProfileVideo() async {
-    if (_profileVideoController != null || _isProfileVideoInitialized) return;
-    try {
-      final videoUrl = _resolvedProfImage?.isNotEmpty == true
-          ? _resolvedProfImage!
-          : (widget.snap['profImage']?.toString() ?? '');
-      if (videoUrl.isEmpty) throw Exception('Empty profile video URL');
-      _profileVideoController = VideoPlayerController.networkUrl(
-        Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      );
-      _profileVideoController!.addListener(_profileVideoListener);
-      await _profileVideoController!.initialize();
-      await _profileVideoController!.setVolume(0.0);
-      await _profileVideoController!.setLooping(true);
-      if (mounted) {
-        setState(() {
-          _isProfileVideoInitialized = true;
-          _isProfileVideoMuted = true;
-        });
-        if (widget.isVisible) {
-          _playProfileVideo();
-        } else {
-          _pauseProfileVideo();
+  void _disposeVideoController() {
+    if (_videoController != null) {
+      _videoController!.removeListener(_videoListener);
+      if (widget.preloadedVideoController != null &&
+          widget.preloadedVideoController == _videoController) {
+        if (_videoController!.value.isPlaying) _videoController!.pause();
+      } else {
+        if (_isVideoPlaying) _videoManager.pauseVideo(_videoController!);
+        try {
+          _videoController!.pause();
+          _videoController!.dispose();
+        } catch (e) {}
+      }
+      _videoController = null;
+    }
+    _isVideoInitialized = false;
+    _isVideoLoading = false;
+  }
+
+  void _videoListener() {
+    if (!mounted) return;
+    if (_videoController != null &&
+        _videoController!.value.position == _videoController!.value.duration &&
+        _videoController!.value.duration != Duration.zero) {
+      _videoController!.seekTo(Duration.zero);
+      if (widget.isVisible && !_isVideoPlaying) _videoController!.play();
+    }
+    if (_videoController != null && _isVideoInitialized) {
+      final isActuallyPlaying = _videoController!.value.isPlaying;
+      final shouldBePlaying =
+          _videoManager.isCurrentlyPlaying(_videoController!);
+      if (isActuallyPlaying != shouldBePlaying && widget.isVisible) {
+        if (shouldBePlaying && !isActuallyPlaying) {
+          _videoController!.play();
+        } else if (!shouldBePlaying && isActuallyPlaying) {
+          _videoController!.pause();
         }
       }
-    } catch (e) {
-      if (mounted) setState(() => _isProfileVideoInitialized = false);
-    }
-  }
-
-  Widget _buildProfileVideoPlayer() {
-    if (_profileVideoController == null || !_isProfileVideoInitialized) {
-      return Container(
-        decoration:
-            const BoxDecoration(shape: BoxShape.circle, color: Colors.white),
-        child: Center(
-            child: CircularProgressIndicator(
-                color: Colors.grey[700], strokeWidth: 2.0)),
-      );
-    }
-    return ClipOval(
-      child: SizedBox(
-        width: 42,
-        height: 42,
-        child: FittedBox(
-          fit: BoxFit.cover,
-          child: SizedBox(
-            width: _profileVideoController!.value.size.width,
-            height: _profileVideoController!.value.size.height,
-            child: VideoPlayer(_profileVideoController!),
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _playProfileVideo() {
-    if (_profileVideoController != null &&
-        _isProfileVideoInitialized &&
-        mounted &&
-        widget.isVisible) {
-      _profileVideoController!.play();
-    }
-  }
-
-  void _pauseProfileVideo() {
-    if (_profileVideoController != null && _isProfileVideoInitialized) {
-      _profileVideoController!.pause();
     }
   }
 
@@ -742,263 +801,263 @@ class _PostCardState extends State<PostCard>
     if (mounted) setState(() {});
   }
 
-  int _countItems(dynamic value) {
+  // Profile video
+  Future<void> _initializeProfileVideo() async {
+    if (_profileVideoController != null || _isProfileVideoInitialized) return;
     try {
-      if (value == null) return 0;
-      if (value is List) return value.length;
-      if (value is Iterable) return value.length;
-      return 0;
-    } catch (_) {
-      return 0;
-    }
-  }
-
-  Future<void> _fetchCommentsCount() async {
-    try {
-      final commentsResponse = await Supabase.instance.client
-          .from('comments')
-          .select('id')
-          .eq('postid', widget.snap['postId']);
-      final repliesResponse = await Supabase.instance.client
-          .from('replies')
-          .select('id')
-          .eq('postid', widget.snap['postId']);
-      final int total =
-          _countItems(commentsResponse) + _countItems(repliesResponse);
-      if (mounted) setState(() => _commentCount = total);
-    } catch (err) {
-      if (mounted) {
-        setState(
-            () => _commentCount = (widget.snap['commentsCount'] ?? 0).toInt());
-      }
-    }
-  }
-
-  void _setupRealtime() {
-    _postChannel =
-        Supabase.instance.client.channel('post_${widget.snap['postId']}');
-    _postChannel.onPostgresChanges(
-      event: PostgresChangeEvent.all,
-      schema: 'public',
-      table: 'post_rating',
-      filter: PostgresChangeFilter(
-          type: PostgresChangeFilterType.eq,
-          column: 'postid',
-          value: widget.snap['postId']),
-      callback: (payload) => _handleRatingUpdate(payload),
-    );
-    _postChannel.onPostgresChanges(
-      event: PostgresChangeEvent.all,
-      schema: 'public',
-      table: 'comments',
-      filter: PostgresChangeFilter(
-          type: PostgresChangeFilterType.eq,
-          column: 'postid',
-          value: widget.snap['postId']),
-      callback: (payload) => _fetchCommentsCount(),
-    );
-    _postChannel.onPostgresChanges(
-      event: PostgresChangeEvent.all,
-      schema: 'public',
-      table: 'replies',
-      filter: PostgresChangeFilter(
-          type: PostgresChangeFilterType.eq,
-          column: 'postid',
-          value: widget.snap['postId']),
-      callback: (payload) => _fetchCommentsCount(),
-    );
-    _postChannel.subscribe();
-  }
-
-  Future<void> _fetchInitialRatings() async {
-    setState(() => _isLoadingRatings = true);
-    try {
-      final countResponse = await Supabase.instance.client
-          .from('post_rating')
-          .select()
-          .eq('postid', widget.snap['postId']);
-      final avgResponse = await Supabase.instance.client
-          .from('post_rating')
-          .select('rating')
-          .eq('postid', widget.snap['postId']);
-      final user = Provider.of<UserProvider>(context, listen: false).user;
-      dynamic userRatingRes;
-      if (user != null) {
-        userRatingRes = await Supabase.instance.client
-            .from('post_rating')
-            .select('rating')
-            .eq('postid', widget.snap['postId'])
-            .eq('userid', user.uid)
-            .maybeSingle();
-      }
-      final allRatings = await Supabase.instance.client
-          .from('post_rating')
-          .select()
-          .eq('postid', widget.snap['postId']);
+      final videoUrl = _resolvedProfImage?.isNotEmpty == true
+          ? _resolvedProfImage!
+          : (widget.snap['profImage']?.toString() ?? '');
+      if (videoUrl.isEmpty) throw Exception('Empty profile video URL');
+      _profileVideoController = VideoPlayerController.networkUrl(
+        Uri.parse(videoUrl),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+      );
+      _profileVideoController!.addListener(_profileVideoListener);
+      await _profileVideoController!.initialize();
+      await _profileVideoController!.setVolume(0.0);
+      await _profileVideoController!.setLooping(true);
       if (mounted) {
         setState(() {
-          _totalRatingsCount = countResponse.length;
-          if (avgResponse.isNotEmpty) {
-            final ratings = avgResponse
-                .map<double>((r) => (r['rating'] as num).toDouble())
-                .toList();
-            _averageRating = ratings.reduce((a, b) => a + b) / ratings.length;
-          } else {
-            _averageRating = 0.0;
-          }
-          if (userRatingRes != null) {
-            _userRating = (userRatingRes['rating'] as num).toDouble();
-            _showSlider = false;
-          } else {
-            _userRating = null;
-            _showSlider = true;
-          }
-          _localRatings = (allRatings as List<dynamic>)
-              .map<Map<String, dynamic>>((r) => r as Map<String, dynamic>)
-              .toList();
-          _isLoadingRatings = false;
+          _isProfileVideoInitialized = true;
+          _isProfileVideoMuted = true;
         });
+        if (widget.isVisible) {
+          _playProfileVideo();
+        } else {
+          _pauseProfileVideo();
+        }
       }
     } catch (e) {
-      if (mounted) setState(() => _isLoadingRatings = false);
+      if (mounted) setState(() => _isProfileVideoInitialized = false);
     }
   }
 
-  void _handleRatingUpdate(PostgresChangePayload payload) {
-    final newRecord = payload.newRecord;
-    final oldRecord = payload.oldRecord;
-    final eventType = payload.eventType;
-    setState(() {
-      switch (eventType) {
-        case PostgresChangeEvent.insert:
-          if (newRecord != null) {
-            _localRatings.insert(0, newRecord);
-            _totalRatingsCount++;
-            _updateAverageRating();
-            final user = Provider.of<UserProvider>(context, listen: false).user;
-            if (user != null && newRecord['userid'] == user.uid) {
-              _showSlider = false;
-              _userRating = (newRecord['rating'] as num).toDouble();
-            }
-          }
-          break;
-        case PostgresChangeEvent.update:
-          if (oldRecord != null && newRecord != null) {
-            final index = _localRatings
-                .indexWhere((r) => r['userid'] == oldRecord['userid']);
-            if (index != -1) _localRatings[index] = newRecord;
-            _updateAverageRating();
-            final user = Provider.of<UserProvider>(context, listen: false).user;
-            if (user != null && newRecord['userid'] == user.uid) {
-              _userRating = (newRecord['rating'] as num).toDouble();
-            }
-          }
-          break;
-        case PostgresChangeEvent.delete:
-          if (oldRecord != null) {
-            _localRatings
-                .removeWhere((r) => r['userid'] == oldRecord['userid']);
-            _totalRatingsCount--;
-            _updateAverageRating();
-            final user = Provider.of<UserProvider>(context, listen: false).user;
-            if (user != null && oldRecord['userid'] == user.uid) {
-              _showSlider = true;
-              _userRating = null;
-            }
-          }
-          break;
-        default:
-          break;
-      }
-    });
-    if (widget.onRateUpdate != null) {
-      widget.onRateUpdate!({
-        ...widget.snap,
-        'userRating': _userRating,
-        'averageRating': _averageRating,
-        'totalRatingsCount': _totalRatingsCount,
-        'ratings': _localRatings,
-        'showSlider': _showSlider,
-      });
+  void _disposeProfileVideoController() {
+    if (_profileVideoController != null) {
+      _profileVideoController!.removeListener(_profileVideoListener);
+      _profileVideoController!.pause();
+      _profileVideoController!.dispose();
+      _profileVideoController = null;
+    }
+    _isProfileVideoInitialized = false;
+  }
+
+  void _profileVideoListener() {
+    if (!mounted) return;
+    if (_profileVideoController != null &&
+        _profileVideoController!.value.position ==
+            _profileVideoController!.value.duration &&
+        _profileVideoController!.value.duration != Duration.zero) {
+      _profileVideoController!.seekTo(Duration.zero);
+      if (widget.isVisible) _profileVideoController!.play();
     }
   }
 
-  void _updateAverageRating() {
-    if (_localRatings.isEmpty) {
-      setState(() => _averageRating = 0.0);
-      return;
+  void _playProfileVideo() {
+    if (_profileVideoController != null &&
+        _isProfileVideoInitialized &&
+        mounted &&
+        widget.isVisible) {
+      _profileVideoController!.play();
     }
-    final total = _localRatings.fold(
-        0.0, (sum, r) => sum + (r['rating'] as num).toDouble());
-    setState(() => _averageRating = total / _localRatings.length);
   }
 
-  Future<void> _checkBlockStatus() async {
+  void _pauseProfileVideo() {
+    if (_profileVideoController != null && _isProfileVideoInitialized) {
+      _profileVideoController!.pause();
+    }
+  }
+
+  // =========================================================================
+  // NAVIGATION
+  // =========================================================================
+  void _navigateToProfile() {
+    if (_isVideo && _isVideoInitialized) _pauseVideo();
+    if (_isProfileVideo && _isProfileVideoInitialized) _pauseProfileVideo();
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (context) => ProfileScreen(uid: widget.snap['uid'])),
+    );
+  }
+
+  void _openCommentsPanel() {
+    if (_isVideo && _isVideoInitialized) _pauseVideo();
+    if (_isProfileVideo && _isProfileVideoInitialized) _pauseProfileVideo();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => CommentsBottomSheet(
+        postId: widget.snap['postId'],
+        postImage: widget.snap['postUrl'],
+        isVideo: _isVideo,
+        onClose: () {
+          if (widget.isVisible) {
+            if (_isVideo && _isVideoInitialized && !_isVideoPlaying) {
+              _playVideo();
+            }
+            if (_isProfileVideo && _isProfileVideoInitialized) {
+              _playProfileVideo();
+            }
+          }
+        },
+        videoController: _videoController,
+      ),
+    ).then((_) => _refreshCommentCount());
+  }
+
+  void _navigateToShare(_ColorSet colors) {
+    if (_isVideo && _isVideoInitialized) _pauseVideo();
+    if (_isProfileVideo && _isProfileVideoInitialized) _pauseProfileVideo();
     final user = Provider.of<UserProvider>(context, listen: false).user;
     if (user == null) return;
-    final isBlocked =
-        await _apiService.isMutuallyBlocked(user.uid, widget.snap['uid']);
-    if (mounted) setState(() => _isBlocked = isBlocked);
+    showDialog(
+      context: context,
+      builder: (context) =>
+          PostShare(currentUserId: user.uid, postId: widget.snap['postId']),
+    );
   }
 
-  Future<void> _recordView() async {
-    if (_viewRecorded) return;
-    final user = Provider.of<UserProvider>(context, listen: false).user;
-    if (user != null) {
-      await _apiService.recordPostView(widget.snap['postId'], user.uid);
-      if (mounted) setState(() => _viewRecorded = true);
-    }
+  // =========================================================================
+  // REPORT / DELETE
+  // =========================================================================
+  void _showReportDialog(_ColorSet colors) {
+    String? selectedReason;
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          backgroundColor: colors.cardColor,
+          title: Text('Report Post', style: TextStyle(color: colors.textColor)),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Thank you for helping keep our community safe.\n\nPlease let us know the reason for reporting this content.',
+                  style: TextStyle(color: colors.textColor.withOpacity(0.7)),
+                ),
+                const SizedBox(height: 16),
+                ..._reportReasons
+                    .map((reason) => RadioListTile<String>(
+                          title: Text(reason,
+                              style: TextStyle(color: colors.textColor)),
+                          value: reason,
+                          groupValue: selectedReason,
+                          activeColor: colors.textColor,
+                          onChanged: (value) =>
+                              setState(() => selectedReason = value),
+                        ))
+                    .toList(),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Cancel', style: TextStyle(color: colors.textColor)),
+            ),
+            TextButton(
+              onPressed: selectedReason != null
+                  ? () => _submitReport(selectedReason!)
+                  : null,
+              child: Text('Submit', style: TextStyle(color: colors.textColor)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
-  void _handleRatingSubmitted(double rating) async {
-    final user = Provider.of<UserProvider>(context, listen: false).user;
-    if (user == null) return;
-    final double? oldUserRating = _userRating;
-    final bool isUpdating = oldUserRating != null;
-    setState(() {
-      _userRating = rating;
-      _showSlider = false;
-      final currentTotal = _averageRating * _totalRatingsCount;
-      if (isUpdating) {
-        _averageRating =
-            (currentTotal - oldUserRating! + rating) / _totalRatingsCount;
-      } else {
-        _totalRatingsCount++;
-        _averageRating = (currentTotal + rating) / _totalRatingsCount;
-      }
-      final idx = _localRatings.indexWhere((r) => r['userid'] == user.uid);
-      if (idx != -1) {
-        _localRatings[idx]['rating'] = rating;
-        _localRatings[idx]['timestamp'] = DateTime.now().toIso8601String();
-      } else {
-        _localRatings.add({
-          'userid': user.uid,
-          'postid': widget.snap['postId'],
-          'rating': rating,
-          'timestamp': DateTime.now().toIso8601String(),
-        });
-      }
-    });
-    if (widget.onRateUpdate != null) {
-      widget.onRateUpdate!({
-        ...widget.snap,
-        'userRating': rating,
-        'averageRating': _averageRating,
-        'totalRatingsCount': _totalRatingsCount,
-        'ratings': _localRatings,
-        'showSlider': false,
-      });
-    }
+  Future<void> _submitReport(String reason) async {
+    Navigator.pop(context);
     try {
-      final success =
-          await _postsMethods.ratePost(widget.snap['postId'], user.uid, rating);
-      if (success != 'success' && mounted) _fetchInitialRatings();
+      await _apiService.reportPost(widget.snap['postId'], reason);
+      showSnackBar(context, 'Report submitted successfully');
     } catch (e) {
-      if (mounted) _fetchInitialRatings();
+      showSnackBar(
+          context, 'Please try again or contact us at ratedly9@gmail.com');
     }
   }
 
-  void _handleEditRating() => setState(() => _showSlider = true);
+  Future<void> _deletePost() async {
+    try {
+      await _apiService.deletePost(widget.snap['postId']);
+      showSnackBar(context, 'Post deleted successfully');
+    } catch (e) {
+      showSnackBar(
+          context, 'Please try again or contact us at ratedly9@gmail.com');
+    }
+  }
+
+  void _showDeleteConfirmation(_ColorSet colors) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: colors.cardColor,
+        title: Text('Delete Post', style: TextStyle(color: colors.textColor)),
+        content: Text('Are you sure you want to delete this post?',
+            style: TextStyle(color: colors.textColor.withOpacity(0.7))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel', style: TextStyle(color: colors.textColor)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _deletePost();
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // =========================================================================
+  // BUILD METHODS
+  // =========================================================================
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _pauseVideo();
+      _pauseProfileVideo();
+    }
+  }
+
+  @override
+  void didUpdateWidget(PostCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isVisible && !_hasBeenSeen && widget.onPostSeen != null) {
+      _markPostAsSeenIfVisible();
+    }
+    if (oldWidget.isVisible != widget.isVisible && _isVideo) {
+      if (widget.isVisible) {
+        if (_isVideoInitialized && !_isVideoPlaying) {
+          _playVideo();
+        } else if (!_isVideoInitialized && !_isVideoLoading) {
+          unawaited(_initializeVideoPlayer());
+        }
+      } else {
+        if (_isVideoInitialized && _isVideoPlaying) _pauseVideo();
+      }
+    }
+    if (oldWidget.isVisible != widget.isVisible && _isProfileVideo) {
+      if (widget.isVisible) {
+        if (_isProfileVideoInitialized) {
+          _playProfileVideo();
+        } else {
+          _initializeProfileVideo();
+        }
+      } else {
+        if (_isProfileVideoInitialized) _pauseProfileVideo();
+      }
+    }
+  }
 
   Widget _buildCaptionWithVisibility(_ColorSet colors) {
     final caption = widget.snap['description'].toString();
@@ -1120,6 +1179,32 @@ class _PostCardState extends State<PostCard>
         shape: BoxShape.circle,
         image:
             DecorationImage(image: NetworkImage(profImage), fit: BoxFit.cover),
+      ),
+    );
+  }
+
+  Widget _buildProfileVideoPlayer() {
+    if (_profileVideoController == null || !_isProfileVideoInitialized) {
+      return Container(
+        decoration:
+            const BoxDecoration(shape: BoxShape.circle, color: Colors.white),
+        child: Center(
+            child: CircularProgressIndicator(
+                color: Colors.grey[700], strokeWidth: 2.0)),
+      );
+    }
+    return ClipOval(
+      child: SizedBox(
+        width: 42,
+        height: 42,
+        child: FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: _profileVideoController!.value.size.width,
+            height: _profileVideoController!.value.size.height,
+            child: VideoPlayer(_profileVideoController!),
+          ),
+        ),
       ),
     );
   }
@@ -1247,8 +1332,9 @@ class _PostCardState extends State<PostCard>
                     GestureDetector(
                       onTap: _navigateToProfile,
                       child: VerifiedUsernameWidget(
-                        username:
-                            widget.snap['username']?.toString() ?? 'Unknown',
+                        username: _ownerUsername ??
+                            widget.snap['username']?.toString() ??
+                            'Unknown',
                         uid: widget.snap['uid']?.toString() ?? '',
                         countryCode: widget.snap['country']?.toString(),
                         style: TextStyle(
@@ -1275,29 +1361,25 @@ class _PostCardState extends State<PostCard>
                   borderRadius: BorderRadius.circular(4),
                 ),
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: _isLoadingRatings
-                    ? Container(
-                        width: 120, height: 20, color: colors.skeletonColor)
-                    : _totalRatingsCount == 0
-                        // ── Conditional zero-rating label ─────────────────
-                        ? Text(
-                            _isTestUser
-                                ? 'Start the Rating'
-                                : 'Be the first to rate',
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.white,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          )
-                        : Text(
-                            'Rated ${_averageRating.toStringAsFixed(1)} by $_totalRatingsCount ${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.white,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
+                child: _totalRatingsCount == 0
+                    ? Text(
+                        _isTestUser
+                            ? 'Start the Rating'
+                            : 'Be the first to rate',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      )
+                    : Text(
+                        'Rated ${_averageRating.toStringAsFixed(1)} by $_totalRatingsCount ${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
               ),
             ],
           ),
@@ -1309,73 +1391,12 @@ class _PostCardState extends State<PostCard>
     );
   }
 
-  void _showReportDialog(_ColorSet colors) {
-    String? selectedReason;
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          backgroundColor: colors.cardColor,
-          title: Text('Report Post', style: TextStyle(color: colors.textColor)),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Thank you for helping keep our community safe.\n\nPlease let us know the reason for reporting this content.',
-                  style: TextStyle(color: colors.textColor.withOpacity(0.7)),
-                ),
-                const SizedBox(height: 16),
-                ..._reportReasons
-                    .map((reason) => RadioListTile<String>(
-                          title: Text(reason,
-                              style: TextStyle(color: colors.textColor)),
-                          value: reason,
-                          groupValue: selectedReason,
-                          activeColor: colors.textColor,
-                          onChanged: (value) =>
-                              setState(() => selectedReason = value),
-                        ))
-                    .toList(),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Cancel', style: TextStyle(color: colors.textColor)),
-            ),
-            TextButton(
-              onPressed: selectedReason != null
-                  ? () => _submitReport(selectedReason!)
-                  : null,
-              child: Text('Submit', style: TextStyle(color: colors.textColor)),
-            ),
-          ],
-        ),
-      ),
+  Widget _buildMediaContent(_ColorSet colors) {
+    return SizedBox(
+      width: double.infinity,
+      height: double.infinity,
+      child: _isVideo ? _buildVideoPlayer(colors) : _buildImageContent(colors),
     );
-  }
-
-  Future<void> _submitReport(String reason) async {
-    Navigator.pop(context);
-    try {
-      await _apiService.reportPost(widget.snap['postId'], reason);
-      showSnackBar(context, 'Report submitted successfully');
-    } catch (e) {
-      showSnackBar(
-          context, 'Please try again or contact us at ratedly9@gmail.com');
-    }
-  }
-
-  Future<void> _deletePost() async {
-    try {
-      await _apiService.deletePost(widget.snap['postId']);
-      showSnackBar(context, 'Post deleted successfully');
-    } catch (e) {
-      showSnackBar(
-          context, 'Please try again or contact us at ratedly9@gmail.com');
-    }
   }
 
   Widget _buildVideoPlayer(_ColorSet colors) {
@@ -1458,6 +1479,32 @@ class _PostCardState extends State<PostCard>
     );
   }
 
+  Widget _buildImageContent(_ColorSet colors) {
+    final imageUrl = widget.snap['postUrl']?.toString() ?? '';
+    if (widget.preloadedImageProvider != null && widget.isImagePreloaded) {
+      return Container(
+        decoration: BoxDecoration(
+          image: DecorationImage(
+              image: widget.preloadedImageProvider!, fit: BoxFit.cover),
+        ),
+      );
+    }
+    return CachedNetworkImage(
+      imageUrl: imageUrl,
+      fit: BoxFit.cover,
+      placeholder: (context, url) => Container(color: Colors.black),
+      errorWidget: (context, url, error) => Container(
+        color: Colors.black,
+        child: Center(
+            child:
+                Icon(Icons.broken_image, size: 48, color: Colors.grey[300]!)),
+      ),
+      fadeInDuration: Duration.zero,
+      fadeOutDuration: Duration.zero,
+      filterQuality: FilterQuality.medium,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -1493,113 +1540,6 @@ class _PostCardState extends State<PostCard>
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildMediaContent(_ColorSet colors) {
-    return SizedBox(
-      width: double.infinity,
-      height: double.infinity,
-      child: _isVideo ? _buildVideoPlayer(colors) : _buildImageContent(colors),
-    );
-  }
-
-  Widget _buildImageContent(_ColorSet colors) {
-    final imageUrl = widget.snap['postUrl']?.toString() ?? '';
-    if (widget.preloadedImageProvider != null && widget.isImagePreloaded) {
-      return Container(
-        decoration: BoxDecoration(
-          image: DecorationImage(
-              image: widget.preloadedImageProvider!, fit: BoxFit.cover),
-        ),
-      );
-    }
-    return CachedNetworkImage(
-      imageUrl: imageUrl,
-      fit: BoxFit.cover,
-      placeholder: (context, url) => Container(color: Colors.black),
-      errorWidget: (context, url, error) => Container(
-        color: Colors.black,
-        child: Center(
-            child:
-                Icon(Icons.broken_image, size: 48, color: Colors.grey[300]!)),
-      ),
-      fadeInDuration: Duration.zero,
-      fadeOutDuration: Duration.zero,
-      filterQuality: FilterQuality.medium,
-    );
-  }
-
-  void _showDeleteConfirmation(_ColorSet colors) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: colors.cardColor,
-        title: Text('Delete Post', style: TextStyle(color: colors.textColor)),
-        content: Text('Are you sure you want to delete this post?',
-            style: TextStyle(color: colors.textColor.withOpacity(0.7))),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel', style: TextStyle(color: colors.textColor)),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _deletePost();
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _navigateToProfile() {
-    if (_isVideo && _isVideoInitialized) _pauseVideo();
-    if (_isProfileVideo && _isProfileVideoInitialized) _pauseProfileVideo();
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-          builder: (context) => ProfileScreen(uid: widget.snap['uid'])),
-    );
-  }
-
-  void _openCommentsPanel() {
-    if (_isVideo && _isVideoInitialized) _pauseVideo();
-    if (_isProfileVideo && _isProfileVideoInitialized) _pauseProfileVideo();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => CommentsBottomSheet(
-        postId: widget.snap['postId'],
-        postImage: widget.snap['postUrl'],
-        isVideo: _isVideo,
-        onClose: () {
-          if (widget.isVisible) {
-            if (_isVideo && _isVideoInitialized && !_isVideoPlaying) {
-              _playVideo();
-            }
-            if (_isProfileVideo && _isProfileVideoInitialized) {
-              _playProfileVideo();
-            }
-          }
-        },
-        videoController: _videoController,
-      ),
-    ).then((_) => unawaited(_fetchCommentsCount()));
-  }
-
-  void _navigateToShare(_ColorSet colors) {
-    if (_isVideo && _isVideoInitialized) _pauseVideo();
-    if (_isProfileVideo && _isProfileVideoInitialized) _pauseProfileVideo();
-    final user = Provider.of<UserProvider>(context, listen: false).user;
-    if (user == null) return;
-    showDialog(
-      context: context,
-      builder: (context) =>
-          PostShare(currentUserId: user.uid, postId: widget.snap['postId']),
     );
   }
 }
