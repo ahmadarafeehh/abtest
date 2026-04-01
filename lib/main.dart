@@ -51,12 +51,8 @@ void main() async {
       _initializeSupabase(),
     ]);
     _appInitState.value = _InitState.ready; // triggers swap to real app
-    final mainDuration = DateTime.now().millisecondsSinceEpoch - mainStart;
-    print('TIMING: main() SDK init completed in $mainDuration ms');
   } catch (_) {
     _appInitState.value = _InitState.error;
-    final mainDuration = DateTime.now().millisecondsSinceEpoch - mainStart;
-    print('TIMING: main() SDK init error after $mainDuration ms');
   }
 
   // Ads, analytics, notifications — fully non-blocking background work.
@@ -81,8 +77,6 @@ Future<void> _initializeFirebase() async {
   } else {
     await Firebase.initializeApp();
   }
-  final duration = DateTime.now().millisecondsSinceEpoch - start;
-  print('TIMING: _initializeFirebase took $duration ms');
 }
 
 Future<void> _initializeSupabase() async {
@@ -92,8 +86,6 @@ Future<void> _initializeSupabase() async {
     anonKey: supabaseAnonKey,
     authOptions: const FlutterAuthClientOptions(autoRefreshToken: true),
   );
-  final duration = DateTime.now().millisecondsSinceEpoch - start;
-  print('TIMING: _initializeSupabase took $duration ms');
 }
 
 Future<void> _initializeNonEssentialServicesInBackground() async {
@@ -103,14 +95,7 @@ Future<void> _initializeNonEssentialServicesInBackground() async {
       _initializeMobileAdsInBackground(),
       _initializeOtherServicesInBackground(),
     ], eagerError: false);
-    final duration = DateTime.now().millisecondsSinceEpoch - start;
-    print(
-        'TIMING: _initializeNonEssentialServicesInBackground took $duration ms');
-  } catch (_) {
-    final duration = DateTime.now().millisecondsSinceEpoch - start;
-    print(
-        'TIMING: _initializeNonEssentialServicesInBackground error after $duration ms');
-  }
+  } catch (_) {}
 }
 
 Future<void> _initializeMobileAdsInBackground() async {
@@ -118,12 +103,7 @@ Future<void> _initializeMobileAdsInBackground() async {
   try {
     if (kIsWeb) return;
     await MobileAds.instance.initialize();
-    final duration = DateTime.now().millisecondsSinceEpoch - start;
-    print('TIMING: _initializeMobileAdsInBackground took $duration ms');
-  } catch (_) {
-    final duration = DateTime.now().millisecondsSinceEpoch - start;
-    print('TIMING: _initializeMobileAdsInBackground error after $duration ms');
-  }
+  } catch (_) {}
 }
 
 Future<void> _initializeOtherServicesInBackground() async {
@@ -136,13 +116,7 @@ Future<void> _initializeOtherServicesInBackground() async {
     });
     unawaited(Future.microtask(() async => await AnalyticsService.init()));
     unawaited(Future.microtask(() async => await NotificationService().init()));
-    final duration = DateTime.now().millisecondsSinceEpoch - start;
-    print('TIMING: _initializeOtherServicesInBackground took $duration ms');
-  } catch (_) {
-    final duration = DateTime.now().millisecondsSinceEpoch - start;
-    print(
-        'TIMING: _initializeOtherServicesInBackground error after $duration ms');
-  }
+  } catch (_) {}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -190,10 +164,6 @@ class _AppBootstrap extends StatelessWidget {
         return ValueListenableBuilder<_InitState>(
           valueListenable: stateNotifier,
           builder: (context, state, _) {
-            final buildDuration =
-                DateTime.now().millisecondsSinceEpoch - buildStart;
-            print(
-                'TIMING: _AppBootstrap build (state=$state) took $buildDuration ms');
             // ── Error state ──────────────────────────────────────────────
             if (state == _InitState.error) {
               return MaterialApp(
@@ -262,9 +232,6 @@ class _OptimizedMyApp extends StatelessWidget {
             home: useDebugHome ? const DebugHome() : const AuthWrapper(),
             navigatorObservers: [CountryCheckObserver()],
           );
-          final buildDuration =
-              DateTime.now().millisecondsSinceEpoch - buildStart;
-          print('TIMING: _OptimizedMyApp build took $buildDuration ms');
           return app;
         },
       ),
