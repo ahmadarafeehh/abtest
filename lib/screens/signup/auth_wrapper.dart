@@ -15,6 +15,7 @@ import 'package:Ratedly/resources/auth_methods.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
+import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 
 Future<void> _logError({
   required String eventType,
@@ -524,21 +525,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
   }
 
   Widget _buildSimpleLoadingScreen() {
-    return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Image.asset('assets/logo/22.png', width: 100, height: 100),
-            const SizedBox(height: 20),
-            const CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          ],
-        ),
-      ),
-    );
+    return const FeedSkeleton(isDark: true);
   }
 }
 
@@ -573,7 +560,6 @@ class _DevModeLoaderState extends State<_DevModeLoader> {
           .maybeSingle();
 
       if (data != null && mounted) {
-        // Use addPostFrameCallback to avoid setState during build
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           final userProvider =
@@ -598,14 +584,7 @@ class _DevModeLoaderState extends State<_DevModeLoader> {
   @override
   Widget build(BuildContext context) {
     if (!_loaded) {
-      return const Scaffold(
-        backgroundColor: Color(0xFF121212),
-        body: Center(
-          child: CircularProgressIndicator(
-            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-          ),
-        ),
-      );
+      return const FeedSkeleton(isDark: true);
     }
     return const ResponsiveLayout(mobileScreenLayout: MobileScreenLayout());
   }
