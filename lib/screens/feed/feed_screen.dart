@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -153,7 +154,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   int _currentVisibleIndex = 0;
   static const int _visiblePostsCount = 3;
 
-  // ⚡ Use the same batch size as the original A (10) for the RPC call.
   static const int _initialBatchSize = 10;
 
   bool _essentialUiReady = false;
@@ -170,6 +170,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   bool _followingIdsLoaded = false;
 
+  // ── Tracks whether we've already written the immediate startup cache ───────
+  bool _immediatePostsCached = false;
+
   _ColorSet _getColors(ThemeProvider themeProvider) {
     final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
     return isDarkMode ? _DarkColors() : _LightColors();
@@ -184,9 +187,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   void _pauseCurrentVideo() {
     VideoManager.pauseAllVideos();
     if (mounted) {
-      setState(() {
-        _currentPlayingPostId = null;
-      });
+      setState(() => _currentPlayingPostId = null);
     } else {
       _currentPlayingPostId = null;
     }
@@ -199,71 +200,61 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
-  Map<String, dynamic>? _getCachedPost(String postId) {
-    return _postCache[postId];
-  }
+  Map<String, dynamic>? _getCachedPost(String postId) => _postCache[postId];
 
   bool _isVideoFile(String url) {
     if (url.isEmpty) return false;
-    final lowerUrl = url.toLowerCase();
-    return lowerUrl.endsWith('.mp4') ||
-        lowerUrl.endsWith('.mov') ||
-        lowerUrl.endsWith('.avi') ||
-        lowerUrl.endsWith('.wmv') ||
-        lowerUrl.endsWith('.flv') ||
-        lowerUrl.endsWith('.mkv') ||
-        lowerUrl.endsWith('.webm') ||
-        lowerUrl.endsWith('.m4v') ||
-        lowerUrl.endsWith('.3gp') ||
-        lowerUrl.contains('/video/') ||
-        lowerUrl.contains('video=true');
+    final l = url.toLowerCase();
+    return l.endsWith('.mp4') ||
+        l.endsWith('.mov') ||
+        l.endsWith('.avi') ||
+        l.endsWith('.wmv') ||
+        l.endsWith('.flv') ||
+        l.endsWith('.mkv') ||
+        l.endsWith('.webm') ||
+        l.endsWith('.m4v') ||
+        l.endsWith('.3gp') ||
+        l.contains('/video/') ||
+        l.contains('video=true');
   }
 
   bool _isImageFile(String url) {
     if (url.isEmpty) return false;
-    final lowerUrl = url.toLowerCase();
-
-    final hasImageExtension = lowerUrl.endsWith('.jpg') ||
-        lowerUrl.endsWith('.jpeg') ||
-        lowerUrl.endsWith('.png') ||
-        lowerUrl.endsWith('.gif') ||
-        lowerUrl.endsWith('.webp') ||
-        lowerUrl.endsWith('.bmp') ||
-        lowerUrl.endsWith('.svg');
-
-    final hasImagePath = lowerUrl.contains('/image/') ||
-        lowerUrl.contains('/images/') ||
-        lowerUrl.contains('/img/') ||
-        lowerUrl.contains('image=true') ||
-        lowerUrl.contains('type=image');
-
+    final l = url.toLowerCase();
+    final hasImageExtension = l.endsWith('.jpg') ||
+        l.endsWith('.jpeg') ||
+        l.endsWith('.png') ||
+        l.endsWith('.gif') ||
+        l.endsWith('.webp') ||
+        l.endsWith('.bmp') ||
+        l.endsWith('.svg');
+    final hasImagePath = l.contains('/image/') ||
+        l.contains('/images/') ||
+        l.contains('/img/') ||
+        l.contains('image=true') ||
+        l.contains('type=image');
     final isSupabaseImage =
-        lowerUrl.contains('supabase.co/storage/v1/object/public/') &&
-            (lowerUrl.contains('/images/') ||
-                lowerUrl.contains('/Images/') ||
-                lowerUrl.contains('/posts/') ||
-                (lowerUrl.contains('/videos/') && hasImageExtension));
-
-    final isFirebaseImage =
-        lowerUrl.contains('firebasestorage.googleapis.com') &&
-            (lowerUrl.contains('_1024x1024') ||
-                lowerUrl.contains('alt=media') ||
-                lowerUrl.contains('/posts/') ||
-                lowerUrl.contains('/images/') ||
-                lowerUrl.contains('/profilepics/') ||
-                lowerUrl.contains('/profilePics/'));
-
-    final hasThumbnailPattern = lowerUrl.contains('thumb') ||
-        lowerUrl.contains('thumbnail') ||
-        lowerUrl.contains('_thumb') ||
-        lowerUrl.contains('_thumbnail');
-
-    final hasImageQueryParam = lowerUrl.contains('format=jpg') ||
-        lowerUrl.contains('format=png') ||
-        lowerUrl.contains('format=webp') ||
-        lowerUrl.contains('image/jpeg') ||
-        lowerUrl.contains('image/png');
-
+        l.contains('supabase.co/storage/v1/object/public/') &&
+            (l.contains('/images/') ||
+                l.contains('/Images/') ||
+                l.contains('/posts/') ||
+                (l.contains('/videos/') && hasImageExtension));
+    final isFirebaseImage = l.contains('firebasestorage.googleapis.com') &&
+        (l.contains('_1024x1024') ||
+            l.contains('alt=media') ||
+            l.contains('/posts/') ||
+            l.contains('/images/') ||
+            l.contains('/profilepics/') ||
+            l.contains('/profilePics/'));
+    final hasThumbnailPattern = l.contains('thumb') ||
+        l.contains('thumbnail') ||
+        l.contains('_thumb') ||
+        l.contains('_thumbnail');
+    final hasImageQueryParam = l.contains('format=jpg') ||
+        l.contains('format=png') ||
+        l.contains('format=webp') ||
+        l.contains('image/jpeg') ||
+        l.contains('image/png');
     return hasImageExtension ||
         hasImagePath ||
         isSupabaseImage ||
@@ -282,24 +273,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   List<String> _getAllImageUrlsFromPost(Map<String, dynamic> post) {
     final urls = <String>{};
-    final postUrl = post['postUrl']?.toString() ?? '';
-    final thumbnailUrl = post['thumbnailUrl']?.toString() ?? '';
-    final imageUrl = post['imageUrl']?.toString() ?? '';
-    final profImageUrl = post['profImage']?.toString() ?? '';
-
-    final List<String> allUrls = [
-      postUrl,
-      thumbnailUrl,
-      imageUrl,
-      profImageUrl
-    ];
-
-    for (final url in allUrls) {
-      if (url.isNotEmpty && _isImageFile(url)) {
-        urls.add(url);
-      }
+    for (final key in ['postUrl', 'thumbnailUrl', 'imageUrl', 'profImage']) {
+      final value = post[key]?.toString() ?? '';
+      if (value.isNotEmpty && _isImageFile(value)) urls.add(value);
     }
-
     for (final key in post.keys) {
       final value = post[key]?.toString() ?? '';
       if (value.isNotEmpty &&
@@ -309,21 +286,20 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         urls.add(value);
       }
     }
-
     return urls.toList();
   }
 
+  // ===========================================================================
+  // MEDIA PRELOADING
+  // ===========================================================================
+
   Future<void> _preloadAllMediaForPost(Map<String, dynamic> post) async {
-    final startTime = DateTime.now().millisecondsSinceEpoch;
     final postId = post['postId']?.toString() ?? '';
     final postUrl = post['postUrl']?.toString() ?? '';
 
     if (postId.isEmpty) return;
-
     if (_postsBeingPreloaded.contains(postId) ||
-        _postsFullyPreloaded.contains(postId)) {
-      return;
-    }
+        _postsFullyPreloaded.contains(postId)) return;
 
     _postsBeingPreloaded.add(postId);
 
@@ -333,24 +309,18 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
     void checkCompletion() {
       mediaPreloaded++;
-
       if (mediaPreloaded >= mediaToPreload && !completer.isCompleted) {
         _postsBeingPreloaded.remove(postId);
         _postsFullyPreloaded.add(postId);
-
         if (mounted) {
-          setState(() {
-            _postReadyToShow[postId] = true;
-          });
+          setState(() => _postReadyToShow[postId] = true);
         }
-
         completer.complete();
       }
     }
 
     if (postUrl.isNotEmpty && _isVideoFile(postUrl)) {
       mediaToPreload++;
-
       try {
         if (_feedVideoControllers.containsKey(postUrl) &&
             _feedVideoControllersInitialized[postUrl] == true) {
@@ -375,7 +345,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       for (final imageUrl in imageUrls) {
         if (imageUrl.isNotEmpty && !_imagePreloaded.containsKey(imageUrl)) {
           mediaToPreload++;
-
           _preloadImage(imageUrl, postId).then((_) {
             checkCompletion();
           }).catchError((e, stack) async {
@@ -394,57 +363,36 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     if (!_isVideoFile(postUrl) && imageUrls.isEmpty) {
       _postsBeingPreloaded.remove(postId);
       _postsFullyPreloaded.add(postId);
-
-      if (mounted) {
-        setState(() {
-          _postReadyToShow[postId] = true;
-        });
-      }
-
+      if (mounted) setState(() => _postReadyToShow[postId] = true);
       completer.complete();
     }
 
-    if (mediaToPreload == 0) {
-      _checkAndMarkPostReady(postId);
-    }
+    if (mediaToPreload == 0) _checkAndMarkPostReady(postId);
 
     return completer.future;
   }
 
   void _preloadAllMediaForPosts(List<Map<String, dynamic>> posts) {
     if (posts.isEmpty) return;
-
-    final postsToPreload = posts.where((post) {
+    for (final post in posts) {
       final postId = post['postId']?.toString() ?? '';
-      return postId.isNotEmpty &&
+      if (postId.isNotEmpty &&
           !_postsBeingPreloaded.contains(postId) &&
-          !_postsFullyPreloaded.contains(postId);
-    }).toList();
-
-    if (postsToPreload.isEmpty) return;
-
-    for (final post in postsToPreload) {
-      final postId = post['postId']?.toString() ?? '';
-      if (postId.isNotEmpty) {
+          !_postsFullyPreloaded.contains(postId)) {
         unawaited(_preloadAllMediaForPost(post));
       }
     }
   }
 
   Future<void> _preloadImage(String imageUrl, String postId) async {
-    if (imageUrl.isEmpty) return;
-
-    if (_imagePreloaded[imageUrl] == true) return;
-
+    if (imageUrl.isEmpty || _imagePreloaded[imageUrl] == true) return;
     try {
       _imagePreloaded[imageUrl] = false;
-
       if (_isFirebaseStorageUrl(imageUrl)) {
         await _preloadFirebaseImageWithSDK(imageUrl, postId);
       } else {
         await _preloadRegularImage(imageUrl, postId);
       }
-
       _checkAndMarkPostReady(postId);
     } catch (e, stack) {
       await _logFeedError(
@@ -463,12 +411,11 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     try {
       final ref = FirebaseStorage.instance.refFromURL(imageUrl);
       const maxSize = 2 * 1024 * 1024;
-      final Uint8List? imageBytes = await ref.getData(maxSize);
-
-      if (imageBytes != null && imageBytes.isNotEmpty) {
-        final imageProvider = MemoryImage(imageBytes);
-        await _loadImageIntoMemory(imageProvider);
-        _loadedImageProviders[imageUrl] = imageProvider;
+      final Uint8List? bytes = await ref.getData(maxSize);
+      if (bytes != null && bytes.isNotEmpty) {
+        final provider = MemoryImage(bytes);
+        await _loadImageIntoMemory(provider);
+        _loadedImageProviders[imageUrl] = provider;
         _imagePreloaded[imageUrl] = true;
       } else {
         throw Exception('Firebase SDK returned null or empty bytes');
@@ -480,17 +427,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         stack: stack,
         additionalData: {'imageUrl': imageUrl, 'postId': postId},
       );
-      try {
-        await _preloadFirebaseImageAlternative(imageUrl, postId);
-      } catch (fallbackError, fallbackStack) {
-        await _logFeedError(
-          operation: '_preloadFirebaseImageAlternative',
-          error: fallbackError,
-          stack: fallbackStack,
-          additionalData: {'imageUrl': imageUrl, 'postId': postId},
-        );
-        rethrow;
-      }
+      await _preloadFirebaseImageAlternative(imageUrl, postId);
     }
   }
 
@@ -498,19 +435,16 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       String imageUrl, String postId) async {
     try {
       final uri = Uri.parse(imageUrl);
-      final path = uri.path;
-      final parts = path.split('/o/');
+      final parts = uri.path.split('/o/');
       if (parts.length >= 2) {
-        final encodedPath = parts[1];
-        final storagePath = Uri.decodeFull(encodedPath);
+        final storagePath = Uri.decodeFull(parts[1]);
         final ref = FirebaseStorage.instance.ref().child(storagePath);
         const maxSize = 2 * 1024 * 1024;
-        final Uint8List? imageBytes = await ref.getData(maxSize);
-
-        if (imageBytes != null && imageBytes.isNotEmpty) {
-          final imageProvider = MemoryImage(imageBytes);
-          await _loadImageIntoMemory(imageProvider);
-          _loadedImageProviders[imageUrl] = imageProvider;
+        final Uint8List? bytes = await ref.getData(maxSize);
+        if (bytes != null && bytes.isNotEmpty) {
+          final provider = MemoryImage(bytes);
+          await _loadImageIntoMemory(provider);
+          _loadedImageProviders[imageUrl] = provider;
           _imagePreloaded[imageUrl] = true;
         }
       }
@@ -521,14 +455,23 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   Future<void> _preloadRegularImage(String imageUrl, String postId) async {
     try {
+      // Check disk cache first (written by FeedCacheService).
+      final cachedFile = await FeedCacheService.getCachedImageFile(imageUrl);
+      if (cachedFile != null) {
+        final provider = FileImage(cachedFile);
+        await _loadImageIntoMemory(provider);
+        _loadedImageProviders[imageUrl] = provider;
+        _imagePreloaded[imageUrl] = true;
+        return;
+      }
+
       final file = await DefaultCacheManager().getSingleFile(
         imageUrl,
-        headers: {
+        headers: const {
           'Cache-Control': 'max-age=604800',
           'Pragma': 'cache',
         },
       );
-
       if (file.existsSync()) {
         _cachedImageInfo[imageUrl] = FileInfo(
           file,
@@ -536,10 +479,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           DateTime.now().add(const Duration(days: 7)),
           imageUrl,
         );
-
-        final imageProvider = FileImage(file);
-        await _loadImageIntoMemory(imageProvider);
-        _loadedImageProviders[imageUrl] = imageProvider;
+        final provider = FileImage(file);
+        await _loadImageIntoMemory(provider);
+        _loadedImageProviders[imageUrl] = provider;
         _imagePreloaded[imageUrl] = true;
       } else {
         throw Exception('Image file does not exist: $imageUrl');
@@ -557,24 +499,19 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         orElse: () => {},
       ),
     );
-
     if (post.isEmpty) return;
 
     final postUrl = post['postUrl']?.toString() ?? '';
     final imageUrls = _getAllImageUrlsFromPost(post);
-
     bool allMediaReady = true;
 
     if (postUrl.isNotEmpty && _isVideoFile(postUrl)) {
-      if (!_feedVideoControllersInitialized.containsKey(postUrl) ||
-          _feedVideoControllersInitialized[postUrl] != true) {
+      if (_feedVideoControllersInitialized[postUrl] != true) {
         allMediaReady = false;
       }
     }
-
     for (final imageUrl in imageUrls) {
-      if (!_imagePreloaded.containsKey(imageUrl) ||
-          _imagePreloaded[imageUrl] != true) {
+      if (_imagePreloaded[imageUrl] != true) {
         allMediaReady = false;
         break;
       }
@@ -583,39 +520,30 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     if (allMediaReady) {
       _postsBeingPreloaded.remove(postId);
       _postsFullyPreloaded.add(postId);
-
-      if (mounted) {
-        setState(() {
-          _postReadyToShow[postId] = true;
-        });
-      }
+      if (mounted) setState(() => _postReadyToShow[postId] = true);
     }
   }
 
   Future<void> _loadImageIntoMemory(ImageProvider imageProvider) async {
     try {
-      final configuration = ImageConfiguration.empty;
-      final stream = imageProvider.resolve(configuration);
-
+      final stream = imageProvider.resolve(ImageConfiguration.empty);
       final completer = Completer<void>();
       final listener = ImageStreamListener(
-        (ImageInfo info, bool synchronousCall) {
-          completer.complete();
-        },
-        onError: (exception, stackTrace) {
-          completer.complete();
-        },
+        (_, __) => completer.complete(),
+        onError: (_, __) => completer.complete(),
       );
-
       stream.addListener(listener);
-      await completer.future.timeout(Duration(seconds: 5));
+      await completer.future.timeout(const Duration(seconds: 5));
       stream.removeListener(listener);
-    } catch (e) {}
+    } catch (_) {}
   }
 
-  ImageProvider? _getPreloadedImageProvider(String imageUrl) {
-    return _loadedImageProviders[imageUrl];
-  }
+  ImageProvider? _getPreloadedImageProvider(String imageUrl) =>
+      _loadedImageProviders[imageUrl];
+
+  // ===========================================================================
+  // VIDEO CONTROLLER – prefers cached file over network stream
+  // ===========================================================================
 
   Future<void> _initializeFeedVideoController(
       String videoUrl, String postId) async {
@@ -623,7 +551,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       await _videoInitializationFutures[videoUrl];
       return;
     }
-
     if (_feedVideoControllers.containsKey(videoUrl) &&
         _feedVideoControllersInitialized[videoUrl] == true) {
       return;
@@ -633,20 +560,30 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     _videoInitializationFutures[videoUrl] = completer.future;
 
     try {
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(videoUrl),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      );
+      VideoPlayerController controller;
+
+      // ── Prefer a locally cached file so playback starts instantly ──────────
+      final cachedFile = await FeedCacheService.getCachedVideoFile(videoUrl);
+      if (cachedFile != null) {
+        controller = VideoPlayerController.file(
+          cachedFile,
+          videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        );
+      } else {
+        controller = VideoPlayerController.networkUrl(
+          Uri.parse(videoUrl),
+          videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        );
+      }
 
       _feedVideoControllers[videoUrl] = controller;
       _feedVideoControllersInitialized[videoUrl] = false;
 
       await controller.initialize().timeout(
-        Duration(seconds: 15),
-        onTimeout: () {
-          throw TimeoutException('Video initialization timeout');
-        },
-      );
+            const Duration(seconds: 15),
+            onTimeout: () =>
+                throw TimeoutException('Video initialization timeout'),
+          );
 
       await controller.setVolume(0.0);
       _feedVideoControllersInitialized[videoUrl] = true;
@@ -660,10 +597,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         additionalData: {'videoUrl': videoUrl, 'postId': postId},
       );
       try {
-        final controller = _feedVideoControllers.remove(videoUrl);
-        if (controller != null) controller.dispose();
-      } catch (disposeError) {}
-
+        _feedVideoControllers.remove(videoUrl)?.dispose();
+      } catch (_) {}
       _feedVideoControllersInitialized.remove(videoUrl);
       _videoInitializationFutures.remove(videoUrl);
       completer.completeError(e);
@@ -672,29 +607,29 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
-  VideoPlayerController? _getPreloadedVideoController(String videoUrl) {
-    return _feedVideoControllers[videoUrl];
-  }
+  VideoPlayerController? _getPreloadedVideoController(String videoUrl) =>
+      _feedVideoControllers[videoUrl];
 
-  bool _isVideoControllerInitialized(String videoUrl) {
-    return _feedVideoControllersInitialized[videoUrl] == true;
-  }
+  bool _isVideoControllerInitialized(String videoUrl) =>
+      _feedVideoControllersInitialized[videoUrl] == true;
+
+  // ===========================================================================
+  // VISIBLE / PRELOAD WINDOW
+  // ===========================================================================
 
   void _updateVisiblePosts(int centerIndex) {
     final currentPosts = _selectedTab == 1 ? _forYouPosts : _followingPosts;
-
     if (currentPosts.isEmpty) return;
 
     int preloadStart = max(0, centerIndex - _mediaPreloadBehind);
     int preloadEnd =
         min(currentPosts.length - 1, centerIndex + _mediaPreloadAhead);
 
-    final List<Map<String, dynamic>> postsToPreload = [];
+    final postsToPreload = <Map<String, dynamic>>[];
     for (int i = preloadStart; i <= preloadEnd; i++) {
       if (i < currentPosts.length) {
         final post = currentPosts[i];
         final postId = post['postId']?.toString() ?? '';
-
         if (postId.isNotEmpty &&
             !_postsFullyPreloaded.contains(postId) &&
             !_postsBeingPreloaded.contains(postId)) {
@@ -702,90 +637,63 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         }
       }
     }
-
-    if (postsToPreload.isNotEmpty) {
-      _preloadAllMediaForPosts(postsToPreload);
-    }
+    if (postsToPreload.isNotEmpty) _preloadAllMediaForPosts(postsToPreload);
 
     int visibleStart = max(0, centerIndex - 1);
     int visibleEnd = min(currentPosts.length - 1, centerIndex + 1);
-
     _visiblePosts.clear();
     for (int i = visibleStart; i <= visibleEnd; i++) {
-      if (i < currentPosts.length) {
-        _visiblePosts.add(currentPosts[i]);
-      }
+      if (i < currentPosts.length) _visiblePosts.add(currentPosts[i]);
     }
 
     _cleanupUnusedMediaControllers(
         preloadStart - 3, preloadEnd + 3, currentPosts);
 
-    if (mounted) {
-      setState(() {
-        _currentVisibleIndex = centerIndex;
-      });
-    }
+    if (mounted) setState(() => _currentVisibleIndex = centerIndex);
   }
 
   void _cleanupUnusedMediaControllers(int preloadStart, int preloadEnd,
       List<Map<String, dynamic>> currentPosts) {
     final preloadedUrls = <String>{};
-
     for (int i = preloadStart; i <= preloadEnd; i++) {
       if (i >= 0 && i < currentPosts.length) {
         final post = currentPosts[i];
         final postUrl = post['postUrl']?.toString() ?? '';
-        final imageUrls = _getAllImageUrlsFromPost(post);
-
         if (postUrl.isNotEmpty) preloadedUrls.add(postUrl);
-        for (final imageUrl in imageUrls) {
-          preloadedUrls.add(imageUrl);
+        for (final url in _getAllImageUrlsFromPost(post)) {
+          preloadedUrls.add(url);
         }
       }
     }
 
     final videoUrlsToRemove = <String>[];
-
     for (final url in _feedVideoControllers.keys) {
-      bool isInAnyPost = false;
-      for (final post in currentPosts) {
-        final postUrl = post['postUrl']?.toString() ?? '';
-        if (postUrl == url) {
-          isInAnyPost = true;
-          break;
-        }
-      }
-
+      bool isInAnyPost =
+          currentPosts.any((p) => p['postUrl']?.toString() == url);
       if (!isInAnyPost && !preloadedUrls.contains(url)) {
         videoUrlsToRemove.add(url);
       }
     }
-
     for (final url in videoUrlsToRemove) {
       final controller = _feedVideoControllers.remove(url);
       _feedVideoControllersInitialized.remove(url);
       _videoInitializationFutures.remove(url);
-
       if (controller != null && controller.value.isInitialized) {
         try {
           controller.pause();
-          Future.delayed(Duration(milliseconds: 100), () {
+          Future.delayed(const Duration(milliseconds: 100), () {
             try {
               controller.dispose();
-            } catch (e) {}
+            } catch (_) {}
           });
-        } catch (e) {}
+        } catch (_) {}
       }
     }
 
-    final List<String> keysToRemove = [];
-    for (final key in _feedVideoControllers.keys) {
-      final controller = _feedVideoControllers[key];
-      if (controller == null || !controller.value.isInitialized) {
-        keysToRemove.add(key);
-      }
-    }
-
+    final keysToRemove = _feedVideoControllers.entries
+        .where((e) => e.value == null || !e.value.value.isInitialized)
+        .map((e) => e.key)
+        .toList();
     for (final key in keysToRemove) {
       _feedVideoControllers.remove(key);
       _feedVideoControllersInitialized.remove(key);
@@ -793,20 +701,19 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     if (_loadedImageProviders.length > 100) {
-      final imageUrlsToRemove = <String>{};
-      for (final url in _loadedImageProviders.keys) {
-        if (!preloadedUrls.contains(url)) {
-          imageUrlsToRemove.add(url);
-        }
-      }
-
-      for (final url in imageUrlsToRemove) {
+      for (final url in _loadedImageProviders.keys
+          .where((u) => !preloadedUrls.contains(u))
+          .toList()) {
         _loadedImageProviders.remove(url);
         _imagePreloaded.remove(url);
         _cachedImageInfo.remove(url);
       }
     }
   }
+
+  // ===========================================================================
+  // VIEW RECORDING
+  // ===========================================================================
 
   Future<void> _scheduleViewRecording(String postId) async {
     _pendingViews.add(postId);
@@ -822,10 +729,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _viewRecordingScheduled = false;
       return;
     }
-
     final viewsToRecord = _pendingViews.toList();
     _pendingViews.clear();
-
     try {
       final userId = currentUserId ?? '';
       await _supabase.from('user_post_views').upsert(
@@ -837,11 +742,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
                     }))
                 .toList(),
           );
-
-      setState(() {
-        _postViewCount += viewsToRecord.length;
-      });
-
+      setState(() => _postViewCount += viewsToRecord.length);
       if (_postViewCount >= 10) {
         _showInterstitialAd();
         _postViewCount = 0;
@@ -858,16 +759,17 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ===========================================================================
+  // LIFECYCLE
+  // ===========================================================================
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-
     FeedCacheService.resetSession();
-
     _followingPageController = PageController();
     _forYouPageController = PageController();
-
     _loadCachedPostsLightningFast();
     _loadInterstitialAd();
   }
@@ -875,9 +777,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-
     final userProvider = Provider.of<UserProvider>(context, listen: false);
-
     if (userProvider.firebaseUid != null && currentUserId == null) {
       currentUserId = userProvider.firebaseUid;
       _unreadCountStream = _createUnreadCountStream();
@@ -893,9 +793,12 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ===========================================================================
+  // STARTUP CACHE LOADING
+  // ===========================================================================
+
   Future<void> _loadCachedPostsLightningFast() async {
     if (_cacheLoadAttempted) return;
-
     _cacheLoadAttempted = true;
 
     if (currentUserId == null || currentUserId!.isEmpty) {
@@ -908,38 +811,42 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     try {
-      final cachedPosts =
+      // ── Step 1: Try the immediate cache first (fastest path) ──────────────
+      //    This was written right after the previous session's first data load,
+      //    so it always contains at least one fresh post.
+      List<Map<String, dynamic>>? cachedPosts =
+          await FeedCacheService.loadImmediatelyCachedPosts(currentUserId!);
+
+      // ── Step 2: Fall back to the legacy rolling cache ──────────────────────
+      cachedPosts ??=
           await FeedCacheService.loadCachedForYouPosts(currentUserId!);
 
       if (cachedPosts != null && cachedPosts.isNotEmpty) {
         _cacheLoaded = true;
-
         if (mounted) {
           setState(() {
-            _forYouPosts = cachedPosts;
+            _forYouPosts = cachedPosts!;
             _essentialUiReady = true;
           });
 
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              _postsBeingPreloaded.clear();
-              _postsFullyPreloaded.clear();
+            if (!mounted) return;
+            _postsBeingPreloaded.clear();
+            _postsFullyPreloaded.clear();
 
-              // Preload only first 3 posts for faster initial paint
-              final toPreload = cachedPosts.length > 3
-                  ? cachedPosts.sublist(0, 3)
-                  : cachedPosts;
-              _preloadAllMediaForPosts(toPreload);
+            final toPreload = cachedPosts!.length > 3
+                ? cachedPosts.sublist(0, 3)
+                : cachedPosts;
+            _preloadAllMediaForPosts(toPreload);
 
-              if (_forYouPosts.isNotEmpty) {
-                final firstPost = _forYouPosts.first;
-                final firstPostId = firstPost['postId']?.toString() ?? '';
-                if (firstPostId.isNotEmpty) {
-                  _postVisibility[firstPostId] = true;
-                  _currentPlayingPostId = firstPostId;
-                  _firstVideoInitialized = false;
-                  _updateVisiblePosts(0);
-                }
+            if (_forYouPosts.isNotEmpty) {
+              final firstPostId =
+                  _forYouPosts.first['postId']?.toString() ?? '';
+              if (firstPostId.isNotEmpty) {
+                _postVisibility[firstPostId] = true;
+                _currentPlayingPostId = firstPostId;
+                _firstVideoInitialized = false;
+                _updateVisiblePosts(0);
               }
             }
           });
@@ -962,7 +869,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   Stream<int> _createUnreadCountStream() {
     _unreadCountController = StreamController<int>.broadcast();
-
     final userId = currentUserId;
     if (userId == null || userId.isEmpty) {
       _unreadCountController!.add(0);
@@ -977,10 +883,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             .select('id')
             .eq('receiver_id', userId)
             .eq('is_read', false);
-
         final int count = (data is List) ? data.length : 0;
-        if (_unreadCountController != null &&
-            !_unreadCountController!.isClosed) {
+        if (!(_unreadCountController?.isClosed ?? true)) {
           _unreadCountController!.add(count);
         }
       } catch (e, stack) {
@@ -990,8 +894,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           stack: stack,
           additionalData: {'userId': userId},
         );
-        if (_unreadCountController != null &&
-            !_unreadCountController!.isClosed) {
+        if (!(_unreadCountController?.isClosed ?? true)) {
           _unreadCountController!.add(0);
         }
       }
@@ -1004,10 +907,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             .select('id')
             .eq('receiver_id', userId)
             .eq('is_read', false);
-
         final int count = (data is List) ? data.length : 0;
-        if (_unreadCountController != null &&
-            !_unreadCountController!.isClosed) {
+        if (!(_unreadCountController?.isClosed ?? true)) {
           _unreadCountController!.add(count);
         }
       } catch (e, stack) {
@@ -1017,8 +918,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           stack: stack,
           additionalData: {'userId': userId},
         );
-        if (_unreadCountController != null &&
-            !_unreadCountController!.isClosed) {
+        if (!(_unreadCountController?.isClosed ?? true)) {
           _unreadCountController!.add(0);
         }
       }
@@ -1029,27 +929,19 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   Future<void> _bulkFetchUsers(List<Map<String, dynamic>> posts) async {
     final Set<String> userIds = {};
-
     for (final post in posts) {
-      final userId = post['uid']?.toString() ?? '';
-      if (userId.isNotEmpty && !_userCache.containsKey(userId)) {
-        userIds.add(userId);
-      }
+      final uid = post['uid']?.toString() ?? '';
+      if (uid.isNotEmpty && !_userCache.containsKey(uid)) userIds.add(uid);
     }
-
     if (userIds.isEmpty) return;
-
     try {
       final response = await _supabase
           .from('users')
           .select('uid, username, photoUrl')
           .inFilter('uid', userIds.toList());
-
-      if (response.isNotEmpty) {
-        for (final user in response) {
-          final userMap = Map<String, dynamic>.from(user);
-          _userCache[userMap['uid']] = userMap;
-        }
+      for (final user in response) {
+        final m = Map<String, dynamic>.from(user);
+        _userCache[m['uid']] = m;
       }
     } catch (e, stack) {
       await _logFeedError(
@@ -1070,70 +962,48 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
     setState(() {
       for (final post in posts) {
-        final postId = post['postId']?.toString() ?? '';
-        if (postId.isNotEmpty) {
-          _postVisibility[postId] = false;
-        }
+        final id = post['postId']?.toString() ?? '';
+        if (id.isNotEmpty) _postVisibility[id] = false;
       }
-
       if (page < posts.length) {
-        final currentPost = posts[page];
-        final postId = currentPost['postId']?.toString() ?? '';
-        if (postId.isNotEmpty) {
-          _postVisibility[postId] = true;
-          newPlayingPostId = postId;
-          unawaited(_scheduleViewRecording(postId));
-
+        final id = posts[page]['postId']?.toString() ?? '';
+        if (id.isNotEmpty) {
+          _postVisibility[id] = true;
+          newPlayingPostId = id;
+          unawaited(_scheduleViewRecording(id));
           if (page == 0 && isForYou && !_firstVideoInitialized) {
             _firstVideoInitialized = true;
           }
         }
       }
-
       if (page > 0) {
-        final previousPost = posts[page - 1];
-        final previousPostId = previousPost['postId']?.toString() ?? '';
-        if (previousPostId.isNotEmpty) {
-          _postVisibility[previousPostId] = true;
-        }
+        final id = posts[page - 1]['postId']?.toString() ?? '';
+        if (id.isNotEmpty) _postVisibility[id] = true;
       }
-
       if (page < posts.length - 1) {
-        final nextPost = posts[page + 1];
-        final nextPostId = nextPost['postId']?.toString() ?? '';
-        if (nextPostId.isNotEmpty) {
-          _postVisibility[nextPostId] = true;
-        }
+        final id = posts[page + 1]['postId']?.toString() ?? '';
+        if (id.isNotEmpty) _postVisibility[id] = true;
       }
-
       _updateVisiblePosts(page);
     });
 
     if (newPlayingPostId != null &&
         newPlayingPostId != previouslyPlayingPostId) {
       _currentPlayingPostId = newPlayingPostId;
-
-      if (previouslyPlayingPostId != null) {
-        VideoManager.pauseAllVideos();
-      }
+      if (previouslyPlayingPostId != null) VideoManager.pauseAllVideos();
     }
 
-    if (isForYou) {
-      unawaited(_delayedCacheUpdate());
-    }
+    if (isForYou) unawaited(_delayedCacheUpdate());
   }
 
   Future<void> _delayedCacheUpdate() async {
     _delayedCacheUpdateTimer?.cancel();
-
-    _delayedCacheUpdateTimer = Timer(Duration(seconds: 2), () async {
+    _delayedCacheUpdateTimer = Timer(const Duration(seconds: 2), () async {
       if (!mounted) return;
-
       if (_nextForYouBatch.isEmpty && !_nextBatchLoaded) {
         _nextForYouBatch = await _loadNextForYouBatch();
         _nextBatchLoaded = true;
       }
-
       final userId = currentUserId;
       if (_nextForYouBatch.isNotEmpty && userId != null) {
         await FeedCacheService.safeCacheUpdate(
@@ -1152,24 +1022,20 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     final currentPosts = isForYou ? _forYouPosts : _followingPosts;
-
     final postsToPreload = <Map<String, dynamic>>[];
     for (int i = 1; i <= 3; i++) {
       final nextPage = page + i;
       if (nextPage < currentPosts.length) {
-        final nextPost = currentPosts[nextPage];
-        final nextPostId = nextPost['postId']?.toString() ?? '';
-        if (nextPostId.isNotEmpty &&
-            !_postsFullyPreloaded.contains(nextPostId) &&
-            !_postsBeingPreloaded.contains(nextPostId)) {
-          postsToPreload.add(nextPost);
+        final post = currentPosts[nextPage];
+        final id = post['postId']?.toString() ?? '';
+        if (id.isNotEmpty &&
+            !_postsFullyPreloaded.contains(id) &&
+            !_postsBeingPreloaded.contains(id)) {
+          postsToPreload.add(post);
         }
       }
     }
-
-    if (postsToPreload.isNotEmpty) {
-      _preloadAllMediaForPosts(postsToPreload);
-    }
+    if (postsToPreload.isNotEmpty) _preloadAllMediaForPosts(postsToPreload);
 
     final hasMore = isForYou ? _hasMoreForYou : _hasMoreFollowing;
     if (page >= currentPosts.length - 3 && hasMore && !_isLoadingMore) {
@@ -1181,7 +1047,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     final postId = post['postId']?.toString() ?? '';
     final isVideo = _isVideoFile(post['postUrl']?.toString() ?? '');
     final postImage = post['postUrl']?.toString() ?? '';
-
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1203,25 +1068,22 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       adUnitId: AdHelper.feedInterstitialAdUnitId,
       request: const AdRequest(),
       adLoadCallback: InterstitialAdLoadCallback(
-        onAdLoaded: (InterstitialAd ad) {
+        onAdLoaded: (ad) {
           _interstitialAd = ad;
           _interstitialAd!.fullScreenContentCallback =
               FullScreenContentCallback(
-            onAdDismissedFullScreenContent: (InterstitialAd ad) {
+            onAdDismissedFullScreenContent: (ad) {
               ad.dispose();
               _loadInterstitialAd();
             },
-            onAdFailedToShowFullScreenContent:
-                (InterstitialAd ad, AdError error) {
+            onAdFailedToShowFullScreenContent: (ad, _) {
               ad.dispose();
               _loadInterstitialAd();
             },
           );
         },
-        onAdFailedToLoad: (LoadAdError error) {
-          Future.delayed(const Duration(seconds: 30), () {
-            _loadInterstitialAd();
-          });
+        onAdFailedToLoad: (_) {
+          Future.delayed(const Duration(seconds: 30), _loadInterstitialAd);
         },
       ),
     );
@@ -1234,7 +1096,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             const Duration(minutes: 10)) {
       return;
     }
-
     if (_interstitialAd != null) {
       _interstitialAd!.show();
       _lastInterstitialAdTime = now;
@@ -1249,38 +1110,30 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _blockedUsers = [];
       return;
     }
-
     final now = DateTime.now();
     if (_blockedUsersCache[userId] != null &&
         _lastBlockedUsersCacheTime != null &&
-        now.difference(_lastBlockedUsersCacheTime!) < Duration(minutes: 5)) {
+        now.difference(_lastBlockedUsersCacheTime!) <
+            const Duration(minutes: 5)) {
       _blockedUsers = _blockedUsersCache[userId]!;
       return;
     }
-
     try {
-      final userResponseRaw = await _supabase
+      final raw = await _supabase
           .from('users')
           .select('blockedUsers')
           .eq('uid', userId)
           .maybeSingle();
-
-      final userResponse = _unwrapResponse(userResponseRaw);
-      if (userResponse != null && userResponse is Map) {
-        final blocked = userResponse['blockedUsers'];
+      final res = _unwrapResponse(raw);
+      if (res != null && res is Map) {
+        final blocked = res['blockedUsers'];
         if (blocked is List) {
           _blockedUsers = blocked.map((e) => e.toString()).toList();
         } else if (blocked is String) {
           try {
-            final parsed = jsonDecode(blocked) as List;
-            _blockedUsers = parsed.map((e) => e.toString()).toList();
-          } catch (e, stack) {
-            await _logFeedError(
-              operation: '_loadBlockedUsers_json',
-              error: e,
-              stack: stack,
-              additionalData: {'userId': userId},
-            );
+            _blockedUsers =
+                (jsonDecode(blocked) as List).map((e) => e.toString()).toList();
+          } catch (_) {
             _blockedUsers = [];
           }
         } else {
@@ -1289,7 +1142,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       } else {
         _blockedUsers = [];
       }
-
       _blockedUsersCache[userId] = _blockedUsers;
       _lastBlockedUsersCacheTime = now;
     } catch (e, stack) {
@@ -1309,18 +1161,15 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _followingIds = [];
       return;
     }
-
     try {
-      final followingResponseRaw = await _supabase
+      final raw = await _supabase
           .from('user_following')
           .select('following_id')
           .eq('user_id', userId);
-
-      final followingResponse = _unwrapResponse(followingResponseRaw);
-      if (followingResponse is List) {
-        _followingIds = followingResponse
-            .map((row) => row['following_id'].toString())
-            .toList();
+      final res = _unwrapResponse(raw);
+      if (res is List) {
+        _followingIds =
+            res.map((row) => row['following_id'].toString()).toList();
       } else {
         _followingIds = [];
       }
@@ -1335,9 +1184,12 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ===========================================================================
+  // INITIAL DATA LOAD
+  // ===========================================================================
+
   Future<void> _loadInitialData() async {
     if (!mounted) return;
-
     try {
       if (currentUserId == null || currentUserId!.isEmpty) {
         final userProvider = Provider.of<UserProvider>(context, listen: false);
@@ -1346,43 +1198,41 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       }
 
       if (!_cacheLoadAttempted) {
-        final cachedPosts =
+        List<Map<String, dynamic>>? cachedPosts =
+            await FeedCacheService.loadImmediatelyCachedPosts(
+                currentUserId ?? '');
+        cachedPosts ??=
             await FeedCacheService.loadCachedForYouPosts(currentUserId ?? '');
 
         if (cachedPosts != null && cachedPosts.isNotEmpty) {
           _cacheLoaded = true;
-
           setState(() {
-            _forYouPosts = cachedPosts;
+            _forYouPosts = cachedPosts!;
             _isLoading = false;
           });
 
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              _postsBeingPreloaded.clear();
-              _postsFullyPreloaded.clear();
-
-              final toPreload = cachedPosts.length > 3
-                  ? cachedPosts.sublist(0, 3)
-                  : cachedPosts;
-              _preloadAllMediaForPosts(toPreload);
-            }
+            if (!mounted) return;
+            _postsBeingPreloaded.clear();
+            _postsFullyPreloaded.clear();
+            final toPreload = cachedPosts!.length > 3
+                ? cachedPosts.sublist(0, 3)
+                : cachedPosts;
+            _preloadAllMediaForPosts(toPreload);
           });
 
           if (_forYouPosts.isNotEmpty) {
-            final firstPost = _forYouPosts.first;
-            final firstPostId = firstPost['postId']?.toString() ?? '';
+            final firstPostId = _forYouPosts.first['postId']?.toString() ?? '';
             if (firstPostId.isNotEmpty) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) {
-                  setState(() {
-                    _postVisibility[firstPostId] = true;
-                    _currentPlayingPostId = firstPostId;
-                    _firstVideoInitialized = false;
-                  });
-                  unawaited(_scheduleViewRecording(firstPostId));
-                  _updateVisiblePosts(0);
-                }
+                if (!mounted) return;
+                setState(() {
+                  _postVisibility[firstPostId] = true;
+                  _currentPlayingPostId = firstPostId;
+                  _firstVideoInitialized = false;
+                });
+                unawaited(_scheduleViewRecording(firstPostId));
+                _updateVisiblePosts(0);
               });
             }
           }
@@ -1391,7 +1241,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             _nextForYouBatch = await _loadNextForYouBatch();
             _nextBatchLoaded = true;
           }());
-
           return;
         }
       }
@@ -1401,32 +1250,26 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           _nextForYouBatch = await _loadNextForYouBatch();
           _nextBatchLoaded = true;
         }());
-
         if (currentUserId == null || currentUserId!.isEmpty) {
           _blockedUsers = [];
         } else {
           await _loadBlockedUsers();
         }
-
         await _loadData();
-
         if (mounted) {
           setState(() => _isLoading = false);
-
           if (_forYouPosts.isNotEmpty && _selectedTab == 1) {
-            final firstPost = _forYouPosts.first;
-            final firstPostId = firstPost['postId']?.toString() ?? '';
+            final firstPostId = _forYouPosts.first['postId']?.toString() ?? '';
             if (firstPostId.isNotEmpty) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) {
-                  setState(() {
-                    _postVisibility[firstPostId] = true;
-                    _currentPlayingPostId = firstPostId;
-                    _firstVideoInitialized = true;
-                  });
-                  unawaited(_scheduleViewRecording(firstPostId));
-                  _updateVisiblePosts(0);
-                }
+                if (!mounted) return;
+                setState(() {
+                  _postVisibility[firstPostId] = true;
+                  _currentPlayingPostId = firstPostId;
+                  _firstVideoInitialized = true;
+                });
+                unawaited(_scheduleViewRecording(firstPostId));
+                _updateVisiblePosts(0);
               });
             }
           }
@@ -1439,7 +1282,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       } else {
         await _loadBlockedUsers();
       }
-
       await _loadData();
     } catch (e, stack) {
       await _logFeedError(
@@ -1462,32 +1304,28 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   Future<List<Map<String, dynamic>>> _loadNextForYouBatch() async {
     final userId = currentUserId;
     if (userId == null || userId.isEmpty) return [];
-
     try {
       final excludedUsers = [..._blockedUsers, userId];
-
-      final responseRaw = await _supabase.rpc('get_for_you_feed', params: {
+      final raw = await _supabase.rpc('get_for_you_feed', params: {
         'current_user_id': userId,
         'excluded_users': excludedUsers,
         'page_offset': _offsetForYou + _initialBatchSize,
         'page_limit': _initialBatchSize,
       });
-
-      final response = _unwrapResponse(responseRaw);
-      if (response is List) {
-        final result = response.map<Map<String, dynamic>>((post) {
-          final Map<String, dynamic> convertedPost = {};
-          (post as Map).forEach((key, value) {
-            if (key.toString() == 'postScore') {
-              convertedPost['score'] = value;
+      final res = _unwrapResponse(raw);
+      if (res is List) {
+        return res.map<Map<String, dynamic>>((post) {
+          final m = <String, dynamic>{};
+          (post as Map).forEach((k, v) {
+            if (k.toString() == 'postScore') {
+              m['score'] = v;
             } else {
-              convertedPost[key.toString()] = value;
+              m[k.toString()] = v;
             }
           });
-          convertedPost['postId'] = convertedPost['postId']?.toString();
-          return convertedPost;
+          m['postId'] = m['postId']?.toString();
+          return m;
         }).toList();
-        return result;
       }
     } catch (e, stack) {
       await _logFeedError(
@@ -1506,6 +1344,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       FeedCacheService.markPostAsSeen(postId, userId);
     }
   }
+
+  // ===========================================================================
+  // MAIN DATA LOADER
+  // ===========================================================================
 
   Future<void> _loadData({bool loadMore = false}) async {
     if ((_selectedTab == 1 && !_hasMoreForYou && loadMore) ||
@@ -1529,57 +1371,46 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           });
           return;
         }
-
-        final responseRaw = await _supabase.rpc('get_following_feed', params: {
+        final raw = await _supabase.rpc('get_following_feed', params: {
           'current_user_id': userId,
           'excluded_users': excludedUsers,
           'following_ids': _followingIds,
           'page_offset': _offsetFollowing,
           'page_limit': _initialBatchSize,
         });
-
-        final response = _unwrapResponse(responseRaw);
-        if (response is List) {
-          newPosts = response.map<Map<String, dynamic>>((post) {
-            final Map<String, dynamic> convertedPost = {};
-            (post as Map).forEach((key, value) {
-              convertedPost[key.toString()] = value;
-            });
-            convertedPost['postId'] = convertedPost['postId']?.toString();
-            return convertedPost;
+        final res = _unwrapResponse(raw);
+        if (res is List) {
+          newPosts = res.map<Map<String, dynamic>>((post) {
+            final m = <String, dynamic>{};
+            (post as Map).forEach((k, v) => m[k.toString()] = v);
+            m['postId'] = m['postId']?.toString();
+            return m;
           }).toList();
-        } else {
-          newPosts = [];
         }
-
         _offsetFollowing += newPosts.length;
         _hasMoreFollowing = newPosts.isNotEmpty;
       } else {
-        final responseRaw = await _supabase.rpc('get_for_you_feed', params: {
+        final raw = await _supabase.rpc('get_for_you_feed', params: {
           'current_user_id': userId,
           'excluded_users': excludedUsers,
           'page_offset': _offsetForYou,
           'page_limit': _initialBatchSize,
         });
-
-        final response = _unwrapResponse(responseRaw);
-        if (response is List) {
-          newPosts = response.map<Map<String, dynamic>>((post) {
-            final Map<String, dynamic> convertedPost = {};
-            (post as Map).forEach((key, value) {
-              if (key.toString() == 'postScore') {
-                convertedPost['score'] = value;
+        final res = _unwrapResponse(raw);
+        if (res is List) {
+          newPosts = res.map<Map<String, dynamic>>((post) {
+            final m = <String, dynamic>{};
+            (post as Map).forEach((k, v) {
+              if (k.toString() == 'postScore') {
+                m['score'] = v;
               } else {
-                convertedPost[key.toString()] = value;
+                m[k.toString()] = v;
               }
             });
-            convertedPost['postId'] = convertedPost['postId']?.toString();
-            return convertedPost;
+            m['postId'] = m['postId']?.toString();
+            return m;
           }).toList();
-        } else {
-          newPosts = [];
         }
-
         _offsetForYou += newPosts.length;
         _hasMoreForYou = newPosts.isNotEmpty;
 
@@ -1589,6 +1420,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         }());
       }
 
+      // ── Preload media ────────────────────────────────────────────────────
       if (!loadMore) {
         _postsBeingPreloaded.clear();
         _postsFullyPreloaded.clear();
@@ -1599,9 +1431,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _preloadAllMediaForPosts(newPosts);
       }
 
-      for (final post in newPosts) {
-        _cachePost(post);
-      }
+      for (final post in newPosts) _cachePost(post);
 
       if (mounted) {
         setState(() {
@@ -1614,40 +1444,54 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           _isLoadingMore = false;
         });
 
+        // ── Write the immediate startup cache after first ForYou load ────────
+        // This guarantees that the NEXT cold start shows at least one post
+        // before the network responds.
+        if (!loadMore &&
+            _selectedTab == 1 &&
+            !_immediatePostsCached &&
+            userId.isNotEmpty &&
+            newPosts.isNotEmpty) {
+          _immediatePostsCached = true;
+          unawaited(
+            FeedCacheService.cacheCurrentPostsNow(
+              newPosts.take(3).toList(),
+              userId,
+            ),
+          );
+        }
+
         unawaited(_bulkFetchUsers(newPosts));
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && !loadMore) {
-            final currentPage =
-                _selectedTab == 1 ? _currentForYouPage : _currentFollowingPage;
-            final currentPosts =
-                _selectedTab == 1 ? _forYouPosts : _followingPosts;
+          if (!mounted || loadMore) return;
+          final currentPage =
+              _selectedTab == 1 ? _currentForYouPage : _currentFollowingPage;
+          final currentPosts =
+              _selectedTab == 1 ? _forYouPosts : _followingPosts;
 
-            _updateVisiblePosts(currentPage);
+          _updateVisiblePosts(currentPage);
 
-            if (_selectedTab == 1 && currentPosts.isNotEmpty) {
-              final firstPost = currentPosts.first;
-              final firstPostId = firstPost['postId']?.toString() ?? '';
-              if (firstPostId.isNotEmpty) {
-                setState(() {
-                  _postVisibility[firstPostId] = true;
-                  _currentPlayingPostId = firstPostId;
-                  _firstVideoInitialized = false;
-                });
-                unawaited(_scheduleViewRecording(firstPostId));
-              }
+          if (_selectedTab == 1 && currentPosts.isNotEmpty) {
+            final firstPostId = currentPosts.first['postId']?.toString() ?? '';
+            if (firstPostId.isNotEmpty) {
+              setState(() {
+                _postVisibility[firstPostId] = true;
+                _currentPlayingPostId = firstPostId;
+                _firstVideoInitialized = false;
+              });
+              unawaited(_scheduleViewRecording(firstPostId));
             }
           }
         });
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            final currentPage =
-                _selectedTab == 1 ? _currentForYouPage : _currentFollowingPage;
-            final currentPosts =
-                _selectedTab == 1 ? _forYouPosts : _followingPosts;
-            _updatePostVisibility(currentPage, currentPosts, _selectedTab == 1);
-          }
+          if (!mounted) return;
+          final currentPage =
+              _selectedTab == 1 ? _currentForYouPage : _currentFollowingPage;
+          final currentPosts =
+              _selectedTab == 1 ? _forYouPosts : _followingPosts;
+          _updatePostVisibility(currentPage, currentPosts, _selectedTab == 1);
         });
       }
     } catch (e, stack) {
@@ -1670,9 +1514,12 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ===========================================================================
+  // TAB SWITCHING
+  // ===========================================================================
+
   void _switchTab(int index) {
     if (_selectedTab == index) return;
-
     _pauseCurrentVideo();
     _currentPlayingPostId = null;
     _firstVideoInitialized = false;
@@ -1688,7 +1535,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     _cachedImageInfo.clear();
     _visiblePosts.clear();
     _postReadyToShow.clear();
-
     _postsBeingPreloaded.clear();
     _postsFullyPreloaded.clear();
 
@@ -1703,7 +1549,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _followingPosts.clear();
       _hasMoreFollowing = true;
       _currentFollowingPage = 0;
-
       if (!_followingIdsLoaded) {
         _followingIdsLoaded = true;
         _loadFollowingIds().then((_) => _loadData()).then((_) {
@@ -1719,7 +1564,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _forYouPosts.clear();
       _hasMoreForYou = true;
       _currentForYouPage = 0;
-
       _loadData().then((_) {
         if (mounted) setState(() => _isLoading = false);
       });
@@ -1729,7 +1573,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-
     _pauseCurrentVideo();
     _currentPlayingPostId = null;
     _firstVideoInitialized = false;
@@ -1746,7 +1589,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           controller.pause();
           controller.dispose();
         }
-      } catch (e) {}
+      } catch (_) {}
     }
     _feedVideoControllers.clear();
     _feedVideoControllersInitialized.clear();
@@ -1755,16 +1598,18 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     _imagePreloaded.clear();
     _cachedImageInfo.clear();
     _postReadyToShow.clear();
-
     _postsBeingPreloaded.clear();
     _postsFullyPreloaded.clear();
 
     super.dispose();
   }
 
-  bool _shouldPostPlayVideo(String postId) {
-    return postId == _currentPlayingPostId && (_postVisibility[postId] == true);
-  }
+  // ===========================================================================
+  // HELPERS
+  // ===========================================================================
+
+  bool _shouldPostPlayVideo(String postId) =>
+      postId == _currentPlayingPostId && (_postVisibility[postId] == true);
 
   VideoPlayerController? _getVideoControllerForPost(Map<String, dynamic> post) {
     final postUrl = post['postUrl']?.toString() ?? '';
@@ -1784,20 +1629,18 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   bool _isImagePreloadedAndReady(Map<String, dynamic> post) {
     final postUrl = post['postUrl']?.toString() ?? '';
-    final imageUrls = _getAllImageUrlsFromPost(post);
-
-    if (postUrl.isNotEmpty && _isImageFile(postUrl)) {
-      return _imagePreloaded[postUrl] == true &&
-          _loadedImageProviders.containsKey(postUrl);
+    if (postUrl.isNotEmpty &&
+        _isImageFile(postUrl) &&
+        _imagePreloaded[postUrl] == true &&
+        _loadedImageProviders.containsKey(postUrl)) {
+      return true;
     }
-
-    for (final imageUrl in imageUrls) {
+    for (final imageUrl in _getAllImageUrlsFromPost(post)) {
       if (_imagePreloaded[imageUrl] == true &&
           _loadedImageProviders.containsKey(imageUrl)) {
         return true;
       }
     }
-
     return false;
   }
 
@@ -1809,26 +1652,25 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   void _navigateToMessages() {
     VideoManager.pauseAllVideos();
     _currentPlayingPostId = null;
-
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     final String? userId = userProvider.firebaseUid ?? userProvider.supabaseUid;
-
     if (userId == null || userId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please sign in to view messages')),
       );
       return;
     }
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (context) => FeedMessages(),
-        ),
+        MaterialPageRoute(builder: (context) => FeedMessages()),
       );
     });
   }
+
+  // ===========================================================================
+  // BUILD
+  // ===========================================================================
 
   @override
   Widget build(BuildContext context) {
@@ -1836,9 +1678,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     final colors = _getColors(themeProvider);
     final width = MediaQuery.of(context).size.width;
 
-    if (!_essentialUiReady) {
-      return _buildMinimalSkeleton(colors);
-    }
+    if (!_essentialUiReady) return _buildMinimalSkeleton(colors);
 
     return Scaffold(
       backgroundColor: colors.backgroundColor,
@@ -1852,7 +1692,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               right: 0,
               child: AnimatedOpacity(
                 opacity: _showOverlay ? 1.0 : 0.0,
-                duration: Duration(milliseconds: 300),
+                duration: const Duration(milliseconds: 300),
                 child: _buildOverlayContent(colors),
               ),
             ),
@@ -1876,18 +1716,14 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               ],
             ),
           ),
-          Positioned(
-            right: 0,
-            child: _buildMessageButton(colors),
-          ),
+          Positioned(right: 0, child: _buildMessageButton(colors)),
         ],
       ),
     );
   }
 
   Widget _buildTabItem(int index, String label, _ColorSet colors) {
-    final bool isSelected = _selectedTab == index;
-
+    final isSelected = _selectedTab == index;
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
       onTap: () {
@@ -1901,7 +1737,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           children: [
             Text(
               label,
-              style: TextStyle(
+              style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.w600,
                 fontSize: 16,
@@ -1930,8 +1766,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         stream: _unreadCountStream,
         builder: (context, snapshot) {
           final count = snapshot.data ?? 0;
-          final formattedCount = _formatMessageCount(count);
-
           return Stack(
             clipBehavior: Clip.none,
             alignment: Alignment.center,
@@ -1940,15 +1774,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
                 color: Colors.transparent,
                 child: IconButton(
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                    minWidth: 40,
-                    minHeight: 40,
-                  ),
-                  icon: Icon(
-                    Icons.message,
-                    color: colors.iconColor,
-                    size: 24,
-                  ),
+                  constraints:
+                      const BoxConstraints(minWidth: 40, minHeight: 40),
+                  icon: Icon(Icons.message, color: colors.iconColor, size: 24),
                   onPressed: _navigateToMessages,
                 ),
               ),
@@ -1958,17 +1786,15 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
                   right: -2,
                   child: Container(
                     padding: const EdgeInsets.all(4),
-                    constraints: const BoxConstraints(
-                      minWidth: 20,
-                      minHeight: 20,
-                    ),
+                    constraints:
+                        const BoxConstraints(minWidth: 20, minHeight: 20),
                     decoration: BoxDecoration(
                       color: colors.cardColor,
                       shape: BoxShape.circle,
                     ),
                     child: Center(
                       child: Text(
-                        formattedCount,
+                        _formatMessageCount(count),
                         style: TextStyle(
                           color: colors.textColor,
                           fontSize: 10,
@@ -1994,9 +1820,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildFollowingFeed(_ColorSet colors) {
-    if (_isLoading && _followingPosts.isEmpty) {
-      return _buildLoadingFeed(colors);
-    }
+    if (_isLoading && _followingPosts.isEmpty) return _buildLoadingFeed(colors);
     if (!_isLoading && _followingIds.isEmpty) {
       return _buildNoFollowingMessage(colors);
     }
@@ -2005,15 +1829,11 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildForYouFeed(_ColorSet colors) {
-    if (_isLoading && _forYouPosts.isEmpty) {
-      return _buildLoadingFeed(colors);
-    }
-
+    if (_isLoading && _forYouPosts.isEmpty) return _buildLoadingFeed(colors);
     if (_forYouPosts.isNotEmpty) {
       return _buildPostsPageView(
           _forYouPosts, _forYouPageController, colors, true);
     }
-
     return _buildLoadingFeed(colors);
   }
 
@@ -2027,7 +1847,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       child: Padding(
         padding: const EdgeInsets.all(32.0),
         child: Text(
-          "Follow users to see their posts here!",
+          'Follow users to see their posts here!',
           style: TextStyle(
             color: colors.textColor.withOpacity(0.7),
             fontSize: 16,
@@ -2046,18 +1866,16 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     bool isForYou,
   ) {
     return NotificationListener<ScrollNotification>(
-      onNotification: (ScrollNotification scrollInfo) {
+      onNotification: (scrollInfo) {
         if (scrollInfo is ScrollUpdateNotification) {
-          final currentOffset = scrollInfo.metrics.pixels;
-          final scrollDifference = currentOffset - _lastScrollOffset;
-
-          if (scrollDifference > 5 && _showOverlay) {
+          final current = scrollInfo.metrics.pixels;
+          final diff = current - _lastScrollOffset;
+          if (diff > 5 && _showOverlay) {
             setState(() => _showOverlay = false);
-          } else if (scrollDifference < -5 && !_showOverlay) {
+          } else if (diff < -5 && !_showOverlay) {
             setState(() => _showOverlay = true);
           }
-
-          _lastScrollOffset = currentOffset;
+          _lastScrollOffset = current;
         }
         return false;
       },
@@ -2070,15 +1888,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           if (index >= posts.length) {
             return _buildLoadingIndicator(colors);
           }
-
           final post = posts[index];
           final postId = post['postId']?.toString() ?? '';
           final postUrl = post['postUrl']?.toString() ?? '';
           final isVisible = _shouldPostPlayVideo(postId);
-
-          final preloadedVideoController = _getVideoControllerForPost(post);
-          final isVideoPreloaded = _isVideoPreloadedAndReady(post);
-          final isImagePreloaded = _isImagePreloadedAndReady(post);
 
           return Container(
             width: double.infinity,
@@ -2089,10 +1902,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               isVisible: isVisible,
               onCommentTap: () => _openComments(context, post),
               onPostSeen: isForYou ? () => _onPostSeen(postId) : null,
-              preloadedVideoController: preloadedVideoController,
-              isVideoPreloaded: isVideoPreloaded,
+              preloadedVideoController: _getVideoControllerForPost(post),
+              isVideoPreloaded: _isVideoPreloadedAndReady(post),
               preloadedImageProvider: _getPreloadedImageProvider(postUrl),
-              isImagePreloaded: isImagePreloaded,
+              isImagePreloaded: _isImagePreloadedAndReady(post),
             ),
           );
         },
@@ -2107,12 +1920,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   String _formatMessageCount(int count) {
-    if (count < 1000) {
-      return count.toString();
-    } else if (count < 10000) {
-      return '${(count / 1000).toStringAsFixed(1)}k';
-    } else {
-      return '${(count ~/ 1000)}k';
-    }
+    if (count < 1000) return count.toString();
+    if (count < 10000) return '${(count / 1000).toStringAsFixed(1)}k';
+    return '${count ~/ 1000}k';
   }
 }
