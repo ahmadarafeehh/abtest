@@ -498,7 +498,7 @@ class _AddPostScreenState extends State<AddPostScreen>
         showSnackBar(context, _isVideo ? 'Video Posted!' : 'Posted!');
         clearMedia();
         widget.onPostUploaded?.call();
-        Navigator.pop(context);
+        Navigator.popUntil(context, (route) => route.isFirst);
       } else if (context.mounted) {
         setState(() => isLoading = false);
         showSnackBar(context, 'Error: $res');
