@@ -17,6 +17,20 @@ import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 
+// Helper to log auth timing to 'fast' table
+void _logAuthEvent(String eventType, int durationMs,
+    {String? userId, String? details}) async {
+  try {
+    await Supabase.instance.client.from('fast').insert({
+      'event_type': eventType,
+      'user_id': userId,
+      'timestamp': DateTime.now().toIso8601String(),
+      'duration_ms': durationMs,
+      'details': details,
+    });
+  } catch (_) {}
+}
+
 Future<void> _logError({
   required String eventType,
   String? firebaseUid,
@@ -66,6 +80,10 @@ class _AuthWrapperState extends State<AuthWrapper> {
   bool _isMigrated = false;
   bool _onboardingComplete = false;
 
+  // Timing variables
+  int _authStartTime = 0;
+  bool _authTimingRecorded = false;
+
   static SharedPreferences? _prefs;
   static Future<SharedPreferences> get prefsInstance async {
     _prefs ??= await SharedPreferences.getInstance();
@@ -77,6 +95,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
   @override
   void initState() {
     super.initState();
+    _authStartTime = DateTime.now().millisecondsSinceEpoch;
     _initializeAuth();
 
     _authSubscription = _supabase.auth.onAuthStateChange.listen((data) async {
@@ -104,6 +123,15 @@ class _AuthWrapperState extends State<AuthWrapper> {
     super.dispose();
   }
 
+  Future<void> _recordAuthCompletion() async {
+    if (_authTimingRecorded) return;
+    _authTimingRecorded = true;
+    final elapsed = DateTime.now().millisecondsSinceEpoch - _authStartTime;
+    await _logAuthEvent('auth_resolution_complete', elapsed,
+        userId: _firebaseUid ?? _supabaseUid,
+        details: 'User authenticated and onboarding status resolved');
+  }
+
   Future<void> _initializeAuth() async {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
 
@@ -112,15 +140,18 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
     if (supabaseSession != null) {
       await _handleSupabaseSession(supabaseSession, userProvider);
+      await _recordAuthCompletion();
       return;
     }
 
     if (firebaseUser != null) {
       await _handleFirebaseUser(firebaseUser, userProvider);
+      await _recordAuthCompletion();
       return;
     }
 
     if (mounted) setState(() => _isLoading = false);
+    await _recordAuthCompletion();
   }
 
   Future<void> _handleSupabaseSession(
