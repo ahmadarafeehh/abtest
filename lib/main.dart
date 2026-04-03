@@ -32,17 +32,61 @@ enum _InitState { loading, ready, error }
 
 final _appInitState = ValueNotifier<_InitState>(_InitState.loading);
 
+// Startup timing global variables
+int _mainStartTime = 0;
+int _bindingInitializedTime = 0;
+int _runAppTime = 0;
+int _firstFrameTime = 0;
+int _firebaseSupabaseReadyTime = 0;
+int _realAppBuiltTime = 0;
+bool _firstFrameLogged = false;
+
+// Helper to log startup events to the 'fast' table (non‑blocking)
+void _logStartupEvent(String eventType, int durationMs, {String? details}) {
+  // Only attempt after Supabase is ready
+  if (_firebaseSupabaseReadyTime == 0) {
+    // Store in a queue? For simplicity, we skip. In practice, we could delay.
+    return;
+  }
+  Future.microtask(() async {
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('fast').insert({
+        'event_type': eventType,
+        'user_id': null, // not known at this stage
+        'timestamp': DateTime.now().toIso8601String(),
+        'duration_ms': durationMs,
+        'details': details,
+        'extra_data': {'phase': eventType},
+      });
+    } catch (_) {}
+  });
+}
+
 void main() async {
-  final mainStart = DateTime.now().millisecondsSinceEpoch;
+  _mainStartTime = DateTime.now().millisecondsSinceEpoch;
   WidgetsFlutterBinding.ensureInitialized();
+  _bindingInitializedTime = DateTime.now().millisecondsSinceEpoch;
 
   // ✅ Paint the skeleton on screen immediately — no SDK blocking the first frame.
   runApp(
     ChangeNotifierProvider(
-      create: (_) => ThemeProvider(), // ← single source of truth
+      create: (_) => ThemeProvider(),
       child: _AppBootstrap(stateNotifier: _appInitState),
     ),
   );
+  _runAppTime = DateTime.now().millisecondsSinceEpoch;
+
+  // Capture first frame time
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    _firstFrameTime = DateTime.now().millisecondsSinceEpoch;
+    if (!_firstFrameLogged) {
+      _firstFrameLogged = true;
+      final elapsed = _firstFrameTime - _mainStartTime;
+      _logStartupEvent('first_frame', elapsed,
+          details: 'First frame rendered (skeleton)');
+    }
+  });
 
   // ✅ Firebase + Supabase are independent; run them in parallel.
   try {
@@ -50,18 +94,22 @@ void main() async {
       _initializeFirebase(),
       _initializeSupabase(),
     ]);
+    _firebaseSupabaseReadyTime = DateTime.now().millisecondsSinceEpoch;
+    final initDuration = _firebaseSupabaseReadyTime - _mainStartTime;
+    _logStartupEvent('firebase_supabase_ready', initDuration,
+        details: 'Both SDKs initialised');
+
     _appInitState.value = _InitState.ready; // triggers swap to real app
   } catch (_) {
     _appInitState.value = _InitState.error;
   }
 
-  // Ads, analytics, notifications — fully non-blocking background work.
+  // Ads, analytics, notifications — fully non‑blocking background work.
   _initializeNonEssentialServicesInBackground();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 Future<void> _initializeFirebase() async {
-  final start = DateTime.now().millisecondsSinceEpoch;
   if (kIsWeb) {
     await Firebase.initializeApp(
       options: const FirebaseOptions(
@@ -80,7 +128,6 @@ Future<void> _initializeFirebase() async {
 }
 
 Future<void> _initializeSupabase() async {
-  final start = DateTime.now().millisecondsSinceEpoch;
   await Supabase.initialize(
     url: supabaseUrl,
     anonKey: supabaseAnonKey,
@@ -89,7 +136,6 @@ Future<void> _initializeSupabase() async {
 }
 
 Future<void> _initializeNonEssentialServicesInBackground() async {
-  final start = DateTime.now().millisecondsSinceEpoch;
   try {
     await Future.wait([
       _initializeMobileAdsInBackground(),
@@ -99,7 +145,6 @@ Future<void> _initializeNonEssentialServicesInBackground() async {
 }
 
 Future<void> _initializeMobileAdsInBackground() async {
-  final start = DateTime.now().millisecondsSinceEpoch;
   try {
     if (kIsWeb) return;
     await MobileAds.instance.initialize();
@@ -107,7 +152,6 @@ Future<void> _initializeMobileAdsInBackground() async {
 }
 
 Future<void> _initializeOtherServicesInBackground() async {
-  final start = DateTime.now().millisecondsSinceEpoch;
   try {
     await Future.microtask(() async {
       if (kIsWeb) {
@@ -158,7 +202,6 @@ class _AppBootstrap extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final buildStart = DateTime.now().millisecondsSinceEpoch;
     return Consumer<ThemeProvider>(
       builder: (context, themeProvider, _) {
         return ValueListenableBuilder<_InitState>(
@@ -212,10 +255,16 @@ class _OptimizedMyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final buildStart = DateTime.now().millisecondsSinceEpoch;
+    // Record when the real app widget tree starts building
+    if (_realAppBuiltTime == 0) {
+      _realAppBuiltTime = DateTime.now().millisecondsSinceEpoch;
+      final elapsed = _realAppBuiltTime - _mainStartTime;
+      _logStartupEvent('real_app_build_start', elapsed,
+          details: 'Building real app after SDKs ready');
+    }
+
     return MultiProvider(
       providers: [
-        // ⚠️  ThemeProvider intentionally omitted — already provided above.
         ChangeNotifierProvider(create: (_) => UserProvider()),
         Provider(create: (_) => SupabaseProfileMethods()),
         Provider(create: (_) => NotificationService()),
