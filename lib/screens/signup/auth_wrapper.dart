@@ -17,8 +17,8 @@ import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 
-// Helper to log auth timing to 'fast' table
-void _logAuthEvent(String eventType, int durationMs,
+// Helper to log auth timing to 'fast' table – now returns Future<void>
+Future<void> _logAuthEvent(String eventType, int durationMs,
     {String? userId, String? details}) async {
   try {
     await Supabase.instance.client.from('fast').insert({
@@ -536,6 +536,9 @@ class _AuthWrapperState extends State<AuthWrapper> {
     }
     // =========================================================
 
+    // The code below is only reachable when devModeBypassAuth == false.
+    // We add an ignore comment to silence the dead code warning during development.
+    // ignore: dead_code
     if (_isLoading) return _buildSimpleLoadingScreen();
 
     final bool hasUser = _firebaseUid != null || _supabaseUid != null;
