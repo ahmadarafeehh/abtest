@@ -162,6 +162,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   final Set<String> _postsBeingPreloaded = {};
   final Set<String> _postsFullyPreloaded = {};
 
+  // Tracks which post IDs are currently stored in the immediate cache so we
+  // know when to refresh it (once the last cached post is seen).
+  Set<String> _immediateCachedPostIds = {};
+
   // Guards so _tryLoadCacheWithPersistedUserId and _loadInitialData don't race.
   bool _cacheLoadAttempted = false;
   bool _cacheLoaded = false;
@@ -573,6 +577,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           );
 
       await controller.setVolume(0.0);
+      // Explicitly pause after initialize so the player never auto-plays
+      // in the background (fixes audio bleed-through on app reopen).
+      await controller.pause();
       _feedVideoControllersInitialized[videoUrl] = true;
       _checkAndMarkPostReady(postId);
       completer.complete();
@@ -755,6 +762,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     super.initState();
     _appStartTime = DateTime.now();
     WidgetsBinding.instance.addObserver(this);
+    // Ensure no leftover video playback from a previous session survives
+    // into this one (covers both fresh launches and OS-resumed processes).
+    VideoManager.pauseAllVideos();
     FeedCacheService.resetSession();
     _followingPageController = PageController();
     _forYouPageController = PageController();
@@ -764,6 +774,21 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     _tryLoadCacheWithPersistedUserId();
 
     _loadInterstitialAd();
+  }
+
+  // ===========================================================================
+  // didChangeAppLifecycleState – pause videos when app goes to background
+  // ===========================================================================
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Pause all video playback whenever the app leaves the foreground.
+    // This prevents audio from the last-played video bleeding into the next
+    // session if the OS suspends rather than kills the process.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      VideoManager.pauseAllVideos();
+    }
   }
 
   // ===========================================================================
@@ -796,6 +821,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _cacheLoaded = false;
         _cacheLoadAttempted = false;
         _immediatePostsCached = false;
+        _immediateCachedPostIds = {};
         _unreadCountStream = _createUnreadCountStream();
         _loadInitialData();
       }
@@ -817,7 +843,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     if (_cacheLoadAttempted) return;
     _cacheLoadAttempted = true;
 
-    // getLastUserIdSync() returns the value warmed synchronously in main().
     final persistedId = FeedCacheService.getLastUserIdSync();
 
     if (persistedId == null || persistedId.isEmpty) {
@@ -828,9 +853,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       return;
     }
 
-    // Use the persisted userId tentatively. skipUserIdCheck=true because the
-    // cache was written for this same user; auth hasn't fired yet so we can't
-    // verify, but it's safe to display.
     try {
       List<Map<String, dynamic>>? posts =
           await FeedCacheService.loadImmediatelyCachedPosts(
@@ -840,8 +862,32 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       posts ??= await FeedCacheService.loadCachedForYouPosts(persistedId);
 
       if (posts != null && posts.isNotEmpty) {
+        // Filter out posts the user already saw in the previous session so
+        // the same content never flashes on screen at the start of a new one.
+        final seenPosts = await FeedCacheService.getSeenPosts(persistedId);
+        if (seenPosts.isNotEmpty) {
+          posts = posts
+              .where((p) => !seenPosts.contains(p['postId']?.toString()))
+              .toList();
+        }
+
+        if (posts.isEmpty) {
+          // All cached posts were already seen – nothing fresh to show yet.
+          // Let the network load take over via didChangeDependencies.
+          _essentialUiReady = true;
+          if (mounted) setState(() {});
+          return;
+        }
+
         _cacheLoaded = true;
         currentUserId ??= persistedId; // tentative until auth confirms
+
+        // Track which posts are now in the immediate cache so we can refresh
+        // it automatically once the last one is marked as seen.
+        _immediateCachedPostIds = posts
+            .map((p) => p['postId']?.toString() ?? '')
+            .where((id) => id.isNotEmpty)
+            .toSet();
 
         if (mounted) {
           setState(() {
@@ -1230,8 +1276,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             userProvider.firebaseUid ?? userProvider.supabaseUid ?? '';
       }
 
-      // If we already loaded from the persisted cache, just kick off
-      // a fresh network fetch in the background and return.
+      // If we already loaded from the persisted cache, kick off a fresh
+      // network fetch in the background. _loadData will append the network
+      // posts after the cached ones (deduped) so the user can scroll
+      // seamlessly from cached content straight into fresh content.
       if (_cacheLoaded && _forYouPosts.isNotEmpty) {
         unawaited(() async {
           _nextForYouBatch = await _loadNextForYouBatch();
@@ -1243,24 +1291,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           await _loadBlockedUsers();
         }
         await _loadData();
-        if (mounted) {
-          setState(() => _isLoading = false);
-          if (_forYouPosts.isNotEmpty && _selectedTab == 1) {
-            final firstPostId = _forYouPosts.first['postId']?.toString() ?? '';
-            if (firstPostId.isNotEmpty) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (!mounted) return;
-                setState(() {
-                  _postVisibility[firstPostId] = true;
-                  _currentPlayingPostId = firstPostId;
-                  _firstVideoInitialized = true;
-                });
-                unawaited(_scheduleViewRecording(firstPostId));
-                _updateVisiblePosts(0);
-              });
-            }
-          }
-        }
+        // Do NOT touch the playing post or scroll position here – the user
+        // may have already scrolled and _loadData's own post-frame callbacks
+        // update the preload window around their current page correctly.
+        if (mounted) setState(() => _isLoading = false);
         return;
       }
 
@@ -1325,11 +1359,52 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     return [];
   }
 
+  // ===========================================================================
+  // POST SEEN TRACKING + AUTOMATIC CACHE REFRESH
+  // ===========================================================================
+
   void _onPostSeen(String postId) {
     final userId = currentUserId;
-    if (userId != null && userId.isNotEmpty) {
-      FeedCacheService.markPostAsSeen(postId, userId);
+    if (userId == null || userId.isEmpty) return;
+    FeedCacheService.markPostAsSeen(postId, userId);
+    // If this was one of the cached startup posts and it's the last one,
+    // immediately write a fresh set into the cache so the next cold start
+    // never runs out of unseen content.
+    if (_immediateCachedPostIds.remove(postId) &&
+        _immediateCachedPostIds.isEmpty) {
+      unawaited(_refreshImmediateCache(userId));
     }
+  }
+
+  /// Writes a fresh set of unseen posts into the immediate startup cache.
+  /// Uses posts already in memory so there is no network round-trip in the
+  /// common case. Falls back to [_nextForYouBatch] if the live feed is
+  /// exhausted.
+  Future<void> _refreshImmediateCache(String userId) async {
+    final seenPosts = await FeedCacheService.getSeenPosts(userId);
+
+    // Prefer unseen posts already loaded in the live feed.
+    List<Map<String, dynamic>> candidates = _forYouPosts
+        .where((p) => !seenPosts.contains(p['postId']?.toString()))
+        .take(3)
+        .toList();
+
+    // Fall back to the pre-fetched next batch when the live feed is exhausted.
+    if (candidates.isEmpty && _nextForYouBatch.isNotEmpty) {
+      candidates = _nextForYouBatch
+          .where((p) => !seenPosts.contains(p['postId']?.toString()))
+          .take(3)
+          .toList();
+    }
+
+    if (candidates.isEmpty) return;
+
+    _immediateCachedPostIds = candidates
+        .map((p) => p['postId']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet();
+
+    unawaited(FeedCacheService.cacheCurrentPostsNow(candidates, userId));
   }
 
   // ===========================================================================
@@ -1349,7 +1424,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       List<Map<String, dynamic>> newPosts = [];
       final userId = currentUserId ?? '';
 
-      // Persist userId so next cold start can skip the auth wait.
       if (userId.isNotEmpty) {
         unawaited(FeedCacheService.persistLastUserId(userId));
       }
@@ -1428,25 +1502,50 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           if (_selectedTab == 0) {
+            // Following tab: straightforward replace or append.
             _followingPosts =
                 loadMore ? [..._followingPosts, ...newPosts] : newPosts;
           } else {
-            _forYouPosts = loadMore ? [..._forYouPosts, ...newPosts] : newPosts;
+            if (loadMore) {
+              // Pagination scroll: always append.
+              _forYouPosts = [..._forYouPosts, ...newPosts];
+            } else if (_cacheLoaded && _forYouPosts.isNotEmpty) {
+              // The first network response arrived while cached posts are
+              // already on screen. Append deduplicated new posts so the user
+              // can scroll straight from cached content into fresh content
+              // without the list ever resetting under them.
+              final existingIds = _forYouPosts
+                  .map((p) => p['postId']?.toString())
+                  .whereType<String>()
+                  .toSet();
+              final dedupedNew = newPosts
+                  .where((p) =>
+                      !existingIds.contains(p['postId']?.toString()))
+                  .toList();
+              _forYouPosts = [..._forYouPosts, ...dedupedNew];
+            } else {
+              // Cold start with no cached posts: replace as normal.
+              _forYouPosts = newPosts;
+            }
           }
           _isLoadingMore = false;
         });
 
-        // Write the immediate startup cache after the first ForYou network load.
+        // Write the immediate startup cache after the first ForYou network
+        // load and keep the in-memory tracker in sync with what was written.
         if (!loadMore &&
             _selectedTab == 1 &&
             !_immediatePostsCached &&
             userId.isNotEmpty &&
             newPosts.isNotEmpty) {
           _immediatePostsCached = true;
-          unawaited(FeedCacheService.cacheCurrentPostsNow(
-            newPosts.take(3).toList(),
-            userId,
-          ));
+          final toImmediateCache = newPosts.take(3).toList();
+          _immediateCachedPostIds = toImmediateCache
+              .map((p) => p['postId']?.toString() ?? '')
+              .where((id) => id.isNotEmpty)
+              .toSet();
+          unawaited(
+              FeedCacheService.cacheCurrentPostsNow(toImmediateCache, userId));
         }
 
         // Log first-post-from-network timing if cache wasn't used.
@@ -1476,10 +1575,17 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           final currentPosts =
               _selectedTab == 1 ? _forYouPosts : _followingPosts;
 
+          // Always refresh the preload window around the user's current page.
           _updateVisiblePosts(currentPage);
 
-          if (_selectedTab == 1 && currentPosts.isNotEmpty) {
-            final firstPostId = currentPosts.first['postId']?.toString() ?? '';
+          // Only snap to post 0 on a true cold start (no cached posts were
+          // ever shown). If cached posts are already on screen the user may
+          // have scrolled – never yank them back to the top.
+          if (_selectedTab == 1 &&
+              currentPosts.isNotEmpty &&
+              !_cacheLoaded) {
+            final firstPostId =
+                currentPosts.first['postId']?.toString() ?? '';
             if (firstPostId.isNotEmpty) {
               setState(() {
                 _postVisibility[firstPostId] = true;
