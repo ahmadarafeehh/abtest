@@ -48,10 +48,6 @@ class FeedCacheService {
   static const _cacheUsedInSessionKey = 'cache_used_in_session';
   static const _currentSessionHiddenKey = 'current_session_hidden';
   static const _lastCacheUpdateAttemptKey = 'last_cache_update_attempt';
-
-  // ── THE KEY FIX ───────────────────────────────────────────────────────────
-  /// Persisted userId so the cache can be read BEFORE auth_resolution_complete.
-  /// Without this, every cold start waits 677–2800 ms just to learn the userId.
   static const _lastUserIdKey = 'feed_last_user_id';
 
   static const _cacheValidityDuration = Duration(hours: 24);
@@ -66,22 +62,16 @@ class FeedCacheService {
 
   static void resetSession() => _cachedSessionId = null;
 
-  // ── In-memory userId cache (populated before first frame) ─────────────────
+  // ── In-memory userId cache ─────────────────────────────────────────────────
   static String? _cachedLastUserId;
 
-  /// Call once in `main()` right after `WidgetsFlutterBinding.ensureInitialized()`
-  /// so [getLastUserIdSync] is non-null for returning users on the very first frame.
   static Future<void> warmUserIdCache() async {
     final prefs = await SharedPreferences.getInstance();
     _cachedLastUserId = prefs.getString(_lastUserIdKey);
   }
 
-  /// Returns the last authenticated userId synchronously (~0 ms).
-  /// Returns null only on a fresh install or after [clearCache].
   static String? getLastUserIdSync() => _cachedLastUserId;
 
-  /// Call as soon as auth resolves (or any time the real userId is learned).
-  /// Idempotent – no-ops if the value hasn't changed.
   static Future<void> persistLastUserId(String userId) async {
     if (userId.isEmpty || userId == _cachedLastUserId) return;
     _cachedLastUserId = userId;
@@ -96,7 +86,7 @@ class FeedCacheService {
   static Completer<List<Map<String, dynamic>>?>? _cacheLoadCompleter;
 
   // =========================================================================
-  // LOGGING
+  // LOGGING  — always fire-and-forget, never awaited on the hot path
   // =========================================================================
   static Future<void> _log({
     required String eventType,
@@ -141,23 +131,30 @@ class FeedCacheService {
         }),
       );
       unawaited(_downloadAndCacheMedia(toCache));
-      await _log(
+      // Non-blocking log — Supabase connection state doesn't matter here
+      // because this runs well after the app is already showing content.
+      unawaited(_log(
         eventType: 'immediate_cache_write',
         userId: userId,
         durationMs: DateTime.now().difference(start).inMilliseconds,
         details: 'Saved ${toCache.length} posts',
         extra: {'post_ids': toCache.map((p) => p['postId']).toList()},
-      );
+      ));
     } catch (e) {
-      await _log(
-          eventType: 'immediate_cache_write_error',
-          userId: userId,
-          details: e.toString());
+      unawaited(_log(
+        eventType: 'immediate_cache_write_error',
+        userId: userId,
+        details: e.toString(),
+      ));
     }
   }
 
-  /// [skipUserIdCheck] should be true when [userId] came from
-  /// [getLastUserIdSync] (before auth resolves) rather than the auth system.
+  /// Reads cached posts from SharedPreferences synchronously-fast.
+  ///
+  /// CRITICAL: every _log() call here is fire-and-forget (no await).
+  /// Previously each await _log() blocked on a Supabase HTTP call during
+  /// cold restart (TLS handshake + token refresh = up to 5 seconds),
+  /// stalling the return of posts that were already sitting in memory.
   static Future<List<Map<String, dynamic>>?> loadImmediatelyCachedPosts(
     String userId, {
     bool skipUserIdCheck = false,
@@ -168,7 +165,8 @@ class FeedCacheService {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_immediatePostsCacheKey);
       if (raw == null) {
-        await _log(
+        // Fire-and-forget — do NOT await, Supabase may not be ready yet.
+        _log(
           eventType: 'immediate_cache_miss',
           userId: userId,
           durationMs: DateTime.now().difference(start).inMilliseconds,
@@ -184,14 +182,15 @@ class FeedCacheService {
       final age = DateTime.now().millisecondsSinceEpoch - timestamp;
 
       if (!skipUserIdCheck && cachedUserId != userId) {
-        await _log(
-            eventType: 'immediate_cache_wrong_user',
-            userId: userId,
-            durationMs: DateTime.now().difference(start).inMilliseconds);
+        _log(
+          eventType: 'immediate_cache_wrong_user',
+          userId: userId,
+          durationMs: DateTime.now().difference(start).inMilliseconds,
+        );
         return null;
       }
       if (age > _cacheValidityDuration.inMilliseconds) {
-        await _log(
+        _log(
           eventType: 'immediate_cache_stale',
           userId: userId,
           durationMs: DateTime.now().difference(start).inMilliseconds,
@@ -200,10 +199,11 @@ class FeedCacheService {
         return null;
       }
       if (sessionId == _currentSessionId) {
-        await _log(
-            eventType: 'immediate_cache_same_session',
-            userId: userId,
-            durationMs: DateTime.now().difference(start).inMilliseconds);
+        _log(
+          eventType: 'immediate_cache_same_session',
+          userId: userId,
+          durationMs: DateTime.now().difference(start).inMilliseconds,
+        );
         return null;
       }
 
@@ -213,7 +213,7 @@ class FeedCacheService {
           [];
       if (posts.isEmpty) return null;
 
-      await _log(
+      _log(
         eventType: 'immediate_cache_hit',
         userId: userId,
         durationMs: DateTime.now().difference(start).inMilliseconds,
@@ -222,10 +222,11 @@ class FeedCacheService {
       );
       return posts;
     } catch (e) {
-      await _log(
-          eventType: 'immediate_cache_load_error',
-          userId: userId,
-          details: e.toString());
+      _log(
+        eventType: 'immediate_cache_load_error',
+        userId: userId,
+        details: e.toString(),
+      );
       return null;
     }
   }
@@ -240,16 +241,20 @@ class FeedCacheService {
     try {
       final info = await _VideoCacheManager.instance.getFileFromCache(videoUrl);
       if (info != null && info.file.existsSync()) {
-        await _log(
-            eventType: 'video_cache_hit',
-            durationMs: DateTime.now().difference(start).inMilliseconds,
-            details: videoUrl);
+        // Fire-and-forget — this is called during preload, Supabase may not
+        // be connected yet on a cold restart.
+        _log(
+          eventType: 'video_cache_hit',
+          durationMs: DateTime.now().difference(start).inMilliseconds,
+          details: videoUrl,
+        );
         return info.file;
       }
-      await _log(
-          eventType: 'video_cache_miss',
-          durationMs: DateTime.now().difference(start).inMilliseconds,
-          details: videoUrl);
+      _log(
+        eventType: 'video_cache_miss',
+        durationMs: DateTime.now().difference(start).inMilliseconds,
+        details: videoUrl,
+      );
     } catch (_) {}
     return null;
   }
@@ -272,16 +277,19 @@ class FeedCacheService {
     try {
       final info = await _ImageCacheManager.instance.getFileFromCache(imageUrl);
       if (info != null && info.file.existsSync()) {
-        await _log(
-            eventType: 'image_cache_hit',
-            durationMs: DateTime.now().difference(start).inMilliseconds,
-            details: imageUrl);
+        // Fire-and-forget — same reason as getCachedVideoFile above.
+        _log(
+          eventType: 'image_cache_hit',
+          durationMs: DateTime.now().difference(start).inMilliseconds,
+          details: imageUrl,
+        );
         return info.file;
       }
-      await _log(
-          eventType: 'image_cache_miss',
-          durationMs: DateTime.now().difference(start).inMilliseconds,
-          details: imageUrl);
+      _log(
+        eventType: 'image_cache_miss',
+        durationMs: DateTime.now().difference(start).inMilliseconds,
+        details: imageUrl,
+      );
     } catch (_) {}
     return null;
   }
@@ -313,7 +321,7 @@ class FeedCacheService {
       final prefs = await SharedPreferences.getInstance();
       if (!forceUpdate) {
         final last = prefs.getInt(_lastCacheUpdateAttemptKey) ?? 0;
-        if (DateTime.now().millisecondsSinceEpoch - last <
+        if (DateTime.now().millisecondsSinceEpoch - last 
             const Duration(minutes: 1).inMilliseconds) return;
       }
 
@@ -359,12 +367,12 @@ class FeedCacheService {
       await prefs.setInt(
           _lastCacheUpdateAttemptKey, DateTime.now().millisecondsSinceEpoch);
       unawaited(_downloadAndCacheMedia(toCache));
-      await _log(
+      unawaited(_log(
         eventType: 'legacy_cache_write',
         userId: userId,
         durationMs: DateTime.now().difference(start).inMilliseconds,
         details: 'Cached ${toCache.length} posts',
-      );
+      ));
     } catch (_) {}
   }
 
@@ -403,12 +411,12 @@ class FeedCacheService {
               .toList();
           if (posts.isNotEmpty) {
             await prefs.setBool(_cacheUsedInSessionKey, true);
-            await _log(
+            unawaited(_log(
               eventType: 'legacy_cache_hit',
               userId: userId,
               durationMs: DateTime.now().difference(start).inMilliseconds,
               details: 'Returned ${posts.length} posts',
-            );
+            ));
             _cacheLoadCompleter!.complete(posts);
             return posts;
           }
@@ -416,15 +424,17 @@ class FeedCacheService {
           await _clearCache(userId);
         }
       }
-      await _log(
-          eventType: 'legacy_cache_miss',
-          userId: userId,
-          durationMs: DateTime.now().difference(start).inMilliseconds);
+      unawaited(_log(
+        eventType: 'legacy_cache_miss',
+        userId: userId,
+        durationMs: DateTime.now().difference(start).inMilliseconds,
+      ));
     } catch (_) {
     } finally {
       _isLoadingCache = false;
-      if (!_cacheLoadCompleter!.isCompleted)
+      if (!_cacheLoadCompleter!.isCompleted) {
         _cacheLoadCompleter!.complete(null);
+      }
       _cacheLoadCompleter = null;
     }
     return null;
@@ -513,12 +523,12 @@ class FeedCacheService {
         trimmed.removeRange(0, trimmed.length - 1000);
       }
       await prefs.setStringList('${_seenPostsKey}_$userId', trimmed);
-      await _log(
+      unawaited(_log(
         eventType: 'post_marked_seen',
         userId: userId,
         durationMs: DateTime.now().difference(start).inMilliseconds,
         details: postId,
-      );
+      ));
     } catch (_) {}
   }
 
@@ -597,7 +607,7 @@ class FeedCacheService {
         _ImageCacheManager.instance.emptyCache(),
         _VideoCacheManager.instance.emptyCache(),
       ]);
-      await _log(eventType: 'cache_cleared', userId: userId);
+      unawaited(_log(eventType: 'cache_cleared', userId: userId));
     } catch (_) {}
   }
 
@@ -665,11 +675,11 @@ class FeedCacheService {
     final start = DateTime.now();
     try {
       await _ImageCacheManager.instance.getSingleFile(url);
-      await _log(
+      unawaited(_log(
         eventType: 'background_image_download',
         durationMs: DateTime.now().difference(start).inMilliseconds,
         details: url,
-      );
+      ));
     } catch (_) {}
   }
 
@@ -677,11 +687,11 @@ class FeedCacheService {
     final start = DateTime.now();
     try {
       await _VideoCacheManager.instance.getSingleFile(url);
-      await _log(
+      unawaited(_log(
         eventType: 'background_video_download',
         durationMs: DateTime.now().difference(start).inMilliseconds,
         details: url,
-      );
+      ));
     } catch (_) {}
   }
 
