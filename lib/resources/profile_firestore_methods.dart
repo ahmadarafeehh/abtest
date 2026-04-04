@@ -576,10 +576,19 @@ class SupabaseProfileMethods {
     } catch (e) {}
   }
 
+  // =============================================
+  // DELETE ENTIRE USER ACCOUNT
+  //
+  // Data-retention policy: all user content
+  // (posts, comments, ratings, follows, messages,
+  // notifications, profile record) is kept intact.
+  // Only the Firebase Auth user and/or Supabase
+  // Auth session are removed so the account can
+  // no longer be signed into.
+  // =============================================
   Future<String> deleteEntireUserAccount(
       String uid, firebase_auth.AuthCredential? credential) async {
     String res = "Some error occurred";
-    String? profilePicUrl;
 
     try {
       final userSel =
@@ -588,99 +597,29 @@ class SupabaseProfileMethods {
 
       if (userData == null) throw Exception("User record not found");
 
-      profilePicUrl = userData['photoUrl'] as String?;
-
       final firebaseUser = firebase_auth.FirebaseAuth.instance.currentUser;
       final supabaseSession = _supabase.auth.currentSession;
 
-      bool isFirebaseUser = firebaseUser != null && firebaseUser.uid == uid;
-      bool isSupabaseUser = supabaseSession != null &&
+      final bool isFirebaseUser =
+          firebaseUser != null && firebaseUser.uid == uid;
+      final bool isSupabaseUser = supabaseSession != null &&
           userData['supabase_uid'] == supabaseSession.user.id;
 
       if (!isFirebaseUser && !isSupabaseUser) {
         throw Exception("User not authenticated or UID mismatch");
       }
 
+      // Re-authenticate Firebase user if a credential was supplied
       if (isFirebaseUser && credential != null) {
         await firebaseUser!.reauthenticateWithCredential(credential);
       }
 
-      await _deleteAllUserPosts(uid);
-
-      final followers = await _supabase
-          .from('user_followers')
-          .select('follower_id')
-          .eq('user_id', uid);
-      final followersData = _unwrap(followers) ?? followers;
-      for (var follower in followersData) {
-        await _supabase
-            .from('user_following')
-            .delete()
-            .eq('user_id', follower['follower_id'])
-            .eq('following_id', uid);
-      }
-
-      final following = await _supabase
-          .from('user_following')
-          .select('following_id')
-          .eq('user_id', uid);
-      final followingData = _unwrap(following) ?? following;
-      for (var followed in followingData) {
-        await _supabase
-            .from('user_followers')
-            .delete()
-            .eq('user_id', followed['following_id'])
-            .eq('follower_id', uid);
-      }
-
-      await _supabase.from('comments').delete().eq('uid', uid);
-      await _supabase.from('post_rating').delete().eq('userid', uid);
-
-      final chatsResponse = await _supabase
-          .from('chats')
-          .select('id')
-          .contains('participants', [uid]);
-
-      if (chatsResponse.isNotEmpty) {
-        final chatIds =
-            chatsResponse.map((chat) => chat['id'] as String).toList();
-        for (final chatId in chatIds) {
-          await _supabase.from('messages').delete().eq('chat_id', chatId);
-        }
-        for (final chatId in chatIds) {
-          await _supabase.from('chats').delete().eq('id', chatId);
-        }
-      }
-
-      await _supabase.from('user_follow_request').delete().eq('user_id', uid);
-      await _supabase
-          .from('user_follow_request')
-          .delete()
-          .eq('requester_id', uid);
-      await _supabase.from('user_following').delete().eq('user_id', uid);
-      await _supabase.from('user_followers').delete().eq('user_id', uid);
-      await _supabase.from('user_followers').delete().eq('follower_id', uid);
-
-      await _supabase.from('notifications').delete().eq('target_user_id', uid);
-      await _deleteUserActorNotifications(uid);
-      await _deleteUserPostViews(uid);
-
-      await _supabase.from('users').delete().eq('uid', uid);
-
-      if (profilePicUrl != null &&
-          profilePicUrl.isNotEmpty &&
-          profilePicUrl != 'default') {
-        if (_isVideoUrl(profilePicUrl)) {
-          await _deleteVideoFromUrl(profilePicUrl);
-        } else if (_isSupabaseUrl(profilePicUrl)) {
-          await StorageMethods().deleteImage(profilePicUrl);
-        }
-      }
-
+      // Delete Firebase Auth user (sign-in credentials only — data is kept)
       if (isFirebaseUser && firebaseUser != null) {
         await firebaseUser.delete();
       }
 
+      // Sign out of Supabase Auth (session only — data is kept)
       if (isSupabaseUser) {
         await _supabase.auth.signOut();
       }
@@ -693,6 +632,7 @@ class SupabaseProfileMethods {
     } catch (e) {
       res = e.toString();
     }
+
     return res;
   }
 }
