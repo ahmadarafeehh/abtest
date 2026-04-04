@@ -225,11 +225,12 @@ class AuthMethods {
             'createdAt': DateTime.now().toIso8601String(),
             'dateOfBirth': null,
             'gender': null,
-            'isVerified': false, // ✅ FIX: never auto-verify on signup
+            'isVerified': false,
             'blockedUsers': <dynamic>[],
             'country': null,
             'migrated': true,
             'supabase_uid': session.user.id,
+            'test': Random().nextBool(), // ← randomly assign A/B test group
           }, onConflict: 'uid');
         } catch (e) {
           await _logError(
