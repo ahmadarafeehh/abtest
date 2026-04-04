@@ -47,28 +47,6 @@ class AuthMethods {
     return digest.toString();
   }
 
-  Future<void> _logError({
-    required String eventType,
-    String? firebaseUid,
-    String? supabaseUid,
-    String? email,
-    String? errorDetails,
-    String? stackTrace,
-    Map<String, dynamic>? additionalData,
-  }) async {
-    try {
-      await _supabase.from('login_logs').insert({
-        'event_type': eventType,
-        'firebase_uid': firebaseUid,
-        'supabase_uid': supabaseUid,
-        'email': email,
-        'error_details': errorDetails,
-        'stack_trace': stackTrace,
-        'additional_data': additionalData,
-      });
-    } catch (_) {}
-  }
-
   // =============================================
   // NATIVE GOOGLE SIGN‑IN
   // =============================================
@@ -94,11 +72,6 @@ class AuthMethods {
 
       return await _checkSupabaseUserOnboarding();
     } catch (e, stack) {
-      await _logError(
-        eventType: 'GOOGLE_SIGNIN_ERROR',
-        errorDetails: e.toString(),
-        stackTrace: stack.toString(),
-      );
       return "Google sign‑in failed: ${e.toString()}";
     }
   }
@@ -118,10 +91,6 @@ class AuthMethods {
       }
       return result;
     } catch (e) {
-      await _logError(
-        eventType: 'GOOGLE_MIGRATION_ERROR',
-        errorDetails: e.toString(),
-      );
       return "Google migration failed: $e";
     }
   }
@@ -153,18 +122,8 @@ class AuthMethods {
       return await _checkSupabaseUserOnboarding();
     } on SignInWithAppleAuthorizationException catch (e, stack) {
       if (e.code == AuthorizationErrorCode.canceled) return "cancelled";
-      await _logError(
-        eventType: 'APPLE_SIGNIN_ERROR',
-        errorDetails: e.message,
-        stackTrace: stack.toString(),
-      );
       return "Apple sign‑in failed: ${e.message}";
     } catch (e, stack) {
-      await _logError(
-        eventType: 'APPLE_SIGNIN_ERROR',
-        errorDetails: e.toString(),
-        stackTrace: stack.toString(),
-      );
       return "Apple sign‑in failed: ${e.toString()}";
     }
   }
@@ -233,12 +192,7 @@ class AuthMethods {
             'test': Random().nextBool(), // ← randomly assign A/B test group
           }, onConflict: 'uid');
         } catch (e) {
-          await _logError(
-            eventType: 'CREATE_USER_RECORD_ERROR',
-            supabaseUid: session.user.id,
-            email: session.user.email,
-            errorDetails: e.toString(),
-          );
+          // ignore
         }
         return "onboarding_required";
       }
@@ -790,11 +744,6 @@ class AuthMethods {
       final String? accessToken = googleAuth.accessToken;
 
       if (idToken == null) {
-        await _logError(
-          eventType: 'GOOGLE_SIGNIN_NO_ID_TOKEN',
-          email: email,
-          errorDetails: 'ID token missing',
-        );
         return "Google sign‑in failed: no ID token";
       }
 
@@ -818,11 +767,6 @@ class AuthMethods {
           accessToken: accessToken,
         );
         if (response.user == null) {
-          await _logError(
-            eventType: 'GOOGLE_SIGNIN_SUPABASE_FAILED',
-            email: email,
-            errorDetails: 'Supabase signInWithIdToken returned null user',
-          );
           return "Supabase sign‑in failed";
         }
 
@@ -845,12 +789,6 @@ class AuthMethods {
         try {
           cred = await _auth.signInWithCredential(credential);
         } on firebase_auth.FirebaseAuthException catch (e) {
-          await _logError(
-            eventType: 'GOOGLE_SIGNIN_FIREBASE_ERROR',
-            email: email,
-            errorDetails: e.message,
-            stackTrace: e.stackTrace?.toString(),
-          );
           return _handleFirebaseAuthError(e);
         }
 
@@ -866,14 +804,6 @@ class AuthMethods {
             .limit(1);
 
         if (res.isEmpty) {
-          await _logError(
-            eventType: 'GOOGLE_SIGNIN_FIREBASE_RECORD_MISSING',
-            email: email,
-            firebaseUid: userId,
-            errorDetails:
-                'User record missing after Firebase sign-in, recreating',
-          );
-
           await _supabase.from('users').upsert({
             'uid': userId,
             'email': email,
@@ -911,38 +841,15 @@ class AuthMethods {
         accessToken: accessToken,
       );
       if (response.user == null) {
-        await _logError(
-          eventType: 'GOOGLE_SIGNIN_NEW_USER_FAILED',
-          email: email,
-          errorDetails: 'Supabase signInWithIdToken returned null user',
-        );
         return "Supabase sign‑up failed";
       }
 
       return await _checkSupabaseUserOnboarding();
     } on firebase_auth.FirebaseAuthException catch (e, stack) {
-      await _logError(
-        eventType: 'GOOGLE_SIGNIN_FIREBASE_EXCEPTION',
-        email: email,
-        errorDetails: e.message,
-        stackTrace: stack.toString(),
-      );
       return _handleFirebaseAuthError(e);
     } on AuthException catch (e, stack) {
-      await _logError(
-        eventType: 'GOOGLE_SIGNIN_SUPABASE_EXCEPTION',
-        email: email,
-        errorDetails: e.message,
-        stackTrace: stack.toString(),
-      );
       return "Supabase auth error: ${e.message}";
     } catch (e, stack) {
-      await _logError(
-        eventType: 'GOOGLE_SIGNIN_UNEXPECTED_ERROR',
-        email: email,
-        errorDetails: e.toString(),
-        stackTrace: stack.toString(),
-      );
       return "Google sign‑in failed: ${e.toString()}";
     }
   }
