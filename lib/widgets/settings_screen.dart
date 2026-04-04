@@ -30,6 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
   String? _currentUserId;
   String? _currentUsername;
+  String? _currentEmail;
 
   // GlobalKey to get the position of the Invite button for iOS share sheet anchor
   final GlobalKey _inviteButtonKey = GlobalKey();
@@ -48,12 +49,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (userProvider.firebaseUid != null && _currentUserId == null) {
       _currentUserId = userProvider.firebaseUid;
       _currentUsername = userProvider.user?.username;
+      _currentEmail = userProvider.user?.email;
       _loadPrivacyStatus();
     } else if (userProvider.firebaseUid == null &&
         userProvider.supabaseUid != null &&
         _currentUserId == null) {
       _currentUserId = userProvider.supabaseUid;
       _currentUsername = userProvider.user?.username;
+      _currentEmail = userProvider.user?.email;
       _loadPrivacyStatus();
     }
   }
@@ -64,7 +67,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final response = await _supabase
           .from('users')
-          .select('isPrivate, username')
+          .select('isPrivate, username, email')
           .eq('uid', _currentUserId!)
           .maybeSingle();
 
@@ -72,6 +75,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         setState(() {
           _isPrivate = response['isPrivate'] ?? false;
           _currentUsername ??= response['username'] as String?;
+          _currentEmail ??= response['email'] as String?;
         });
       } else if (mounted) {
         setState(() => _isPrivate = false);
@@ -146,14 +150,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'iOS: $iosLink\n'
         'Android: $androidLink';
 
-    // Log that user tapped the button
-    await _logInviteShare(
-      status: 'INVITE_TAPPED',
-      platform: null,
-    );
+    await _logInviteShare(status: 'INVITE_TAPPED', platform: null);
 
-    // Get the position of the invite button for iOS share sheet anchor
-    // iOS requires a non-zero origin rect or it throws PlatformException
     Rect shareOrigin = Rect.fromCenter(
       center: Offset(
         MediaQuery.of(context).size.width / 2,
@@ -179,23 +177,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
 
       if (result.status == ShareResultStatus.success) {
-        // User picked an app and dismissed the sheet
         await _logInviteShare(
           status: 'INVITE_SHARED',
           platform: result.raw.isNotEmpty ? result.raw : 'unknown',
         );
       } else if (result.status == ShareResultStatus.dismissed) {
-        // User opened the sheet but dismissed without picking
-        await _logInviteShare(
-          status: 'INVITE_DISMISSED',
-          platform: null,
-        );
+        await _logInviteShare(status: 'INVITE_DISMISSED', platform: null);
       } else {
-        // Unavailable — share sheet couldn't open
-        await _logInviteShare(
-          status: 'INVITE_UNAVAILABLE',
-          platform: null,
-        );
+        await _logInviteShare(status: 'INVITE_UNAVAILABLE', platform: null);
       }
     } catch (e, stack) {
       await _logInviteShare(
@@ -227,6 +216,205 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // =============================================
+  // DELETION REASON DIALOG
+  // Returns the selected reason + optional details,
+  // or null if the user cancelled.
+  // =============================================
+  Future<Map<String, String?>?> _showDeletionReasonDialog(
+      _ColorSet colors) async {
+    String? selectedReason;
+    final TextEditingController detailsController = TextEditingController();
+
+    final reasons = [
+      'Not enough users',
+      'I did not receive ratings on my posts',
+      'The feed (FYP) is boring',
+      'I encountered an error',
+      'Other',
+    ];
+
+    final result = await showDialog<Map<String, String?>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final bool needsDetails =
+                selectedReason == 'I encountered an error' ||
+                    selectedReason == 'Other';
+            final bool canConfirm = selectedReason != null &&
+                (!needsDetails || detailsController.text.trim().isNotEmpty);
+
+            return AlertDialog(
+              backgroundColor: colors.cardColor,
+              title: Text(
+                'Before you go…',
+                style: TextStyle(
+                  color: colors.textColor,
+                  fontWeight: FontWeight.w700,
+                  fontFamily: 'Montserrat',
+                ),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Please tell us why you\'re leaving. Your feedback helps us improve.',
+                      style: TextStyle(
+                        color: colors.textColor.withOpacity(0.8),
+                        fontSize: 14,
+                        fontFamily: 'Inter',
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ...reasons.map((reason) {
+                      return RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        value: reason,
+                        groupValue: selectedReason,
+                        activeColor: colors.textColor,
+                        title: Text(
+                          reason,
+                          style: TextStyle(
+                            color: colors.textColor,
+                            fontSize: 14,
+                            fontFamily: 'Inter',
+                          ),
+                        ),
+                        onChanged: (value) {
+                          setDialogState(() {
+                            selectedReason = value;
+                            detailsController.clear();
+                          });
+                        },
+                      );
+                    }).toList(),
+                    if (needsDetails) ...[
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: detailsController,
+                        maxLines: 3,
+                        style: TextStyle(
+                          color: colors.textColor,
+                          fontFamily: 'Inter',
+                          fontSize: 14,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: selectedReason == 'I encountered an error'
+                              ? 'Describe the error…'
+                              : 'Tell us more…',
+                          hintStyle: TextStyle(
+                            color: colors.textColor.withOpacity(0.45),
+                            fontFamily: 'Inter',
+                            fontSize: 14,
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide(
+                                color: colors.textColor.withOpacity(0.3)),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderSide:
+                                BorderSide(color: colors.textColor, width: 1.5),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
+                        ),
+                        onChanged: (_) => setDialogState(() {}),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(null),
+                  child: Text(
+                    'Cancel',
+                    style:
+                        TextStyle(color: colors.textColor, fontFamily: 'Inter'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: canConfirm
+                      ? () {
+                          Navigator.of(context).pop({
+                            'reason': selectedReason,
+                            'details': needsDetails
+                                ? detailsController.text.trim()
+                                : null,
+                          });
+                        }
+                      : null,
+                  style: TextButton.styleFrom(
+                    backgroundColor: canConfirm
+                        ? Colors.red[900]
+                        : Colors.red[900]!.withOpacity(0.3),
+                  ),
+                  child: Text(
+                    'Delete Account',
+                    style: TextStyle(
+                      color: canConfirm ? Colors.red[100] : Colors.red[200],
+                      fontFamily: 'Inter',
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    detailsController.dispose();
+    return result;
+  }
+
+  // =============================================
+  // LOG DELETION DATA TO SUPABASE
+  // =============================================
+  Future<void> _logDeletionData({
+    required String uid,
+    required String? username,
+    required String? email,
+    required String reason,
+    String? details,
+  }) async {
+    try {
+      final now = DateTime.now().toUtc().toIso8601String();
+
+      // Insert into deleted_users
+      await _supabase.from('deleted_users').insert({
+        'uid': uid,
+        'username': username,
+        'email': email,
+        'deleted_at': now,
+      });
+    } catch (e) {
+      debugPrint('deleted_users insert failed: $e');
+    }
+
+    try {
+      // Insert into deletion_reasons
+      await _supabase.from('deletion_reasons').insert({
+        'uid': uid,
+        'reason': reason,
+        'details': details,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('deletion_reasons insert failed: $e');
+    }
+  }
+
+  // =============================================
+  // DELETE ACCOUNT
+  // =============================================
   Future<void> _deleteAccount() async {
     if (_currentUserId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -238,6 +426,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
     final colors = _getColors(themeProvider);
 
+    // ── Step 1: First confirmation ──────────────────────────────────────────
     bool? confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -272,6 +461,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final bool isGoogleUser = providers.contains('google.com');
     final bool isSupabaseUser = user == null;
 
+    // ── Step 2: Apple extra confirmation ────────────────────────────────────
     if (isAppleUser) {
       bool? finalConfirm = await showDialog<bool>(
         context: context,
@@ -301,8 +491,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (finalConfirm != true || !mounted) return;
     }
 
+    // ── Step 3: Deletion reason dialog ──────────────────────────────────────
+    final reasonData = await _showDeletionReasonDialog(colors);
+    if (reasonData == null || !mounted) return; // user cancelled
+
     setState(() => _isLoading = true);
 
+    // ── Step 4: Re-authenticate if needed, then delete ──────────────────────
     try {
       AuthCredential? credential;
 
@@ -382,6 +577,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
       }
 
+      // ── Step 5: Log deletion data before proceeding ──────────────────────
+      await _logDeletionData(
+        uid: userId,
+        username: _currentUsername,
+        email: _currentEmail ??
+            user?.email ??
+            _supabase.auth.currentSession?.user.email,
+        reason: reasonData['reason'] ?? 'Unknown',
+        details: reasonData['details'],
+      );
+
+      // ── Step 6: Delete auth accounts (data is retained) ──────────────────
       try {
         String res = await SupabaseProfileMethods()
             .deleteEntireUserAccount(userId, credential);
@@ -619,12 +826,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (userProvider.firebaseUid != null) {
         _currentUserId = userProvider.firebaseUid;
         _currentUsername = userProvider.user?.username;
+        _currentEmail = userProvider.user?.email;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _loadPrivacyStatus();
         });
       } else if (userProvider.supabaseUid != null) {
         _currentUserId = userProvider.supabaseUid;
         _currentUsername = userProvider.user?.username;
+        _currentEmail = userProvider.user?.email;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _loadPrivacyStatus();
         });
@@ -657,8 +866,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 const BlueVerificationScreen()),
                       ),
                     ),
-                    // tileKey passed here so _inviteFriend can find this
-                    // widget's position on screen for the iOS share sheet anchor
                     _buildOptionTile(
                       title: 'Invite a Friend',
                       icon: Icons.person_add_alt_1,
