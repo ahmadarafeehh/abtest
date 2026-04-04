@@ -10,42 +10,29 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 void unawaited(Future<void> future) {}
 
 // ---------------------------------------------------------------------------
-// Dedicated cache managers so video and image caches don't evict each other.
+// Dedicated cache managers
 // ---------------------------------------------------------------------------
 
-/// Caches image files for up to 7 days, max 200 MB.
 class _ImageCacheManager extends CacheManager with ImageCacheManager {
   static const key = 'feed_image_cache';
   static _ImageCacheManager? _instance;
   static _ImageCacheManager get instance =>
       _instance ??= _ImageCacheManager._();
-
   _ImageCacheManager._()
-      : super(
-          Config(
-            key,
-            stalePeriod: const Duration(days: 7),
-            maxNrOfCacheObjects: 300,
-          ),
-        );
+      : super(Config(key,
+            stalePeriod: const Duration(days: 7), maxNrOfCacheObjects: 300));
 }
 
-/// Caches video files for up to 3 days, max 500 MB.
 class _VideoCacheManager extends CacheManager {
   static const key = 'feed_video_cache';
   static _VideoCacheManager? _instance;
   static _VideoCacheManager get instance =>
       _instance ??= _VideoCacheManager._();
-
   _VideoCacheManager._()
-      : super(
-          Config(
-            key,
+      : super(Config(key,
             stalePeriod: const Duration(days: 3),
-            maxNrOfCacheObjects: 30, // videos are large – be conservative
-            fileService: HttpFileService(),
-          ),
-        );
+            maxNrOfCacheObjects: 30,
+            fileService: HttpFileService()));
 }
 
 // ---------------------------------------------------------------------------
@@ -53,21 +40,24 @@ class _VideoCacheManager extends CacheManager {
 // ---------------------------------------------------------------------------
 
 class FeedCacheService {
-  // ── SharedPreferences keys ────────────────────────────────────────────────
-  static const String _cachedForYouPostsKey = 'cached_for_you_posts_v29';
-  static const String _seenPostsKey = 'seen_posts';
-  static const Duration _cacheValidityDuration = Duration(hours: 24);
-  static const String _mediaPreloadedKey = 'media_preloaded_v2';
-  static const String _cacheUsedInSessionKey = 'cache_used_in_session';
-  static const String _currentSessionHiddenKey = 'current_session_hidden';
-  static const String _lastCacheUpdateAttemptKey = 'last_cache_update_attempt';
+  // ── Keys ──────────────────────────────────────────────────────────────────
+  static const _cachedForYouPostsKey = 'cached_for_you_posts_v29';
+  static const _immediatePostsCacheKey = 'immediate_posts_cache_v1';
+  static const _seenPostsKey = 'seen_posts';
+  static const _mediaPreloadedKey = 'media_preloaded_v2';
+  static const _cacheUsedInSessionKey = 'cache_used_in_session';
+  static const _currentSessionHiddenKey = 'current_session_hidden';
+  static const _lastCacheUpdateAttemptKey = 'last_cache_update_attempt';
 
-  /// Separate key for the "immediate" cache written right after first load.
-  static const String _immediatePostsCacheKey = 'immediate_posts_cache_v1';
+  // ── THE KEY FIX ───────────────────────────────────────────────────────────
+  /// Persisted userId so the cache can be read BEFORE auth_resolution_complete.
+  /// Without this, every cold start waits 677–2800 ms just to learn the userId.
+  static const _lastUserIdKey = 'feed_last_user_id';
+
+  static const _cacheValidityDuration = Duration(hours: 24);
 
   // ── Session tracking ──────────────────────────────────────────────────────
   static String? _cachedSessionId;
-
   static String get _currentSessionId {
     _cachedSessionId ??=
         '${DateTime.now().millisecondsSinceEpoch}_${UniqueKey().hashCode}';
@@ -76,14 +66,39 @@ class FeedCacheService {
 
   static void resetSession() => _cachedSessionId = null;
 
-  // ── Concurrency guard for loadCachedForYouPosts ───────────────────────────
+  // ── In-memory userId cache (populated before first frame) ─────────────────
+  static String? _cachedLastUserId;
+
+  /// Call once in `main()` right after `WidgetsFlutterBinding.ensureInitialized()`
+  /// so [getLastUserIdSync] is non-null for returning users on the very first frame.
+  static Future<void> warmUserIdCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    _cachedLastUserId = prefs.getString(_lastUserIdKey);
+  }
+
+  /// Returns the last authenticated userId synchronously (~0 ms).
+  /// Returns null only on a fresh install or after [clearCache].
+  static String? getLastUserIdSync() => _cachedLastUserId;
+
+  /// Call as soon as auth resolves (or any time the real userId is learned).
+  /// Idempotent – no-ops if the value hasn't changed.
+  static Future<void> persistLastUserId(String userId) async {
+    if (userId.isEmpty || userId == _cachedLastUserId) return;
+    _cachedLastUserId = userId;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_lastUserIdKey, userId);
+    } catch (_) {}
+  }
+
+  // ── Concurrency guard ─────────────────────────────────────────────────────
   static bool _isLoadingCache = false;
   static Completer<List<Map<String, dynamic>>?>? _cacheLoadCompleter;
 
   // =========================================================================
-  // DATABASE LOGGING HELPER
+  // LOGGING
   // =========================================================================
-  static Future<void> _logToFastTable({
+  static Future<void> _log({
     required String eventType,
     String? userId,
     int? durationMs,
@@ -91,26 +106,21 @@ class FeedCacheService {
     Map<String, dynamic>? extra,
   }) async {
     try {
-      final supabase = Supabase.instance.client;
-      await supabase.from('fast').insert({
+      await Supabase.instance.client.from('fast').insert({
         'event_type': eventType,
-        'user_id': userId ?? supabase.auth.currentSession?.user.id,
+        'user_id':
+            userId ?? Supabase.instance.client.auth.currentSession?.user.id,
         'timestamp': DateTime.now().toIso8601String(),
         'duration_ms': durationMs,
         'details': details,
         'extra_data': extra,
       });
-    } catch (e) {
-      // Silently fail – we don't want logging to break caching
-      print('⚠️ [Cache] Failed to log to fast table: $e');
-    }
+    } catch (_) {}
   }
 
   // =========================================================================
-  // PUBLIC API
+  // 1. IMMEDIATE CACHE  (fast cold-start path)
   // =========================================================================
-
-  // ── 1. Immediate cache (written right after first data load) ──────────────
 
   static Future<void> cacheCurrentPostsNow(
     List<Map<String, dynamic>> posts,
@@ -118,54 +128,47 @@ class FeedCacheService {
   ) async {
     final start = DateTime.now();
     if (posts.isEmpty || userId.isEmpty) return;
-
     try {
       final prefs = await SharedPreferences.getInstance();
-      final postsToCache = posts.take(3).toList();
-
-      print('📦 [Cache] cacheCurrentPostsNow: saving ${postsToCache.length} posts for user $userId');
-
-      final cacheData = {
-        'posts': postsToCache,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'userId': userId,
-        'sessionId': _currentSessionId,
-      };
-
-      await prefs.setString(_immediatePostsCacheKey, jsonEncode(cacheData));
-
-      // Kick off media downloads in the background – don't block caller.
-      unawaited(_downloadAndCacheMedia(postsToCache));
-
-      final duration = DateTime.now().difference(start).inMilliseconds;
-      await _logToFastTable(
+      final toCache = posts.take(3).toList();
+      await prefs.setString(
+        _immediatePostsCacheKey,
+        jsonEncode({
+          'posts': toCache,
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+          'userId': userId,
+          'sessionId': _currentSessionId,
+        }),
+      );
+      unawaited(_downloadAndCacheMedia(toCache));
+      await _log(
         eventType: 'immediate_cache_write',
         userId: userId,
-        durationMs: duration,
-        details: 'Saved ${postsToCache.length} posts',
-        extra: {'post_ids': postsToCache.map((p) => p['postId']).toList()},
+        durationMs: DateTime.now().difference(start).inMilliseconds,
+        details: 'Saved ${toCache.length} posts',
+        extra: {'post_ids': toCache.map((p) => p['postId']).toList()},
       );
     } catch (e) {
-      print('❌ [Cache] cacheCurrentPostsNow failed: $e');
-      await _logToFastTable(
-        eventType: 'immediate_cache_write_error',
-        userId: userId,
-        details: e.toString(),
-      );
+      await _log(
+          eventType: 'immediate_cache_write_error',
+          userId: userId,
+          details: e.toString());
     }
   }
 
+  /// [skipUserIdCheck] should be true when [userId] came from
+  /// [getLastUserIdSync] (before auth resolves) rather than the auth system.
   static Future<List<Map<String, dynamic>>?> loadImmediatelyCachedPosts(
-    String userId,
-  ) async {
+    String userId, {
+    bool skipUserIdCheck = false,
+  }) async {
     final start = DateTime.now();
     if (userId.isEmpty) return null;
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_immediatePostsCacheKey);
       if (raw == null) {
-        print('⚠️ [Cache] loadImmediatelyCachedPosts: no immediate cache found');
-        await _logToFastTable(
+        await _log(
           eventType: 'immediate_cache_miss',
           userId: userId,
           durationMs: DateTime.now().difference(start).inMilliseconds,
@@ -173,7 +176,6 @@ class FeedCacheService {
         );
         return null;
       }
-      print('✅ [Cache] loadImmediatelyCachedPosts: raw cache exists');
 
       final data = jsonDecode(raw) as Map<String, dynamic>;
       final cachedUserId = data['userId'] as String? ?? '';
@@ -181,62 +183,56 @@ class FeedCacheService {
       final sessionId = data['sessionId'] as String?;
       final age = DateTime.now().millisecondsSinceEpoch - timestamp;
 
-      if (cachedUserId != userId) {
-        print('⚠️ [Cache] loadImmediatelyCachedPosts: wrong user');
-        await _logToFastTable(
-          eventType: 'immediate_cache_wrong_user',
-          userId: userId,
-          durationMs: DateTime.now().difference(start).inMilliseconds,
-        );
+      if (!skipUserIdCheck && cachedUserId != userId) {
+        await _log(
+            eventType: 'immediate_cache_wrong_user',
+            userId: userId,
+            durationMs: DateTime.now().difference(start).inMilliseconds);
         return null;
       }
       if (age > _cacheValidityDuration.inMilliseconds) {
-        print('⚠️ [Cache] loadImmediatelyCachedPosts: stale (age=${age ~/ 3600000}h)');
-        await _logToFastTable(
+        await _log(
           eventType: 'immediate_cache_stale',
           userId: userId,
           durationMs: DateTime.now().difference(start).inMilliseconds,
-          details: 'Age in hours: ${age / 3600000}',
+          details: 'Age ${age ~/ 3600000}h',
         );
         return null;
       }
-      if (sessionId != null && sessionId == _currentSessionId) {
-        print('⚠️ [Cache] loadImmediatelyCachedPosts: same session, skipping');
-        await _logToFastTable(
-          eventType: 'immediate_cache_same_session',
-          userId: userId,
-          durationMs: DateTime.now().difference(start).inMilliseconds,
-        );
+      if (sessionId == _currentSessionId) {
+        await _log(
+            eventType: 'immediate_cache_same_session',
+            userId: userId,
+            durationMs: DateTime.now().difference(start).inMilliseconds);
         return null;
       }
 
       final posts = (data['posts'] as List<dynamic>?)
-          ?.map((e) => Map<String, dynamic>.from(e as Map))
-          .toList() ?? [];
+              ?.map((e) => Map<String, dynamic>.from(e as Map))
+              .toList() ??
+          [];
       if (posts.isEmpty) return null;
 
-      final duration = DateTime.now().difference(start).inMilliseconds;
-      print('✅ [Cache] loadImmediatelyCachedPosts: returning ${posts.length} posts');
-      await _logToFastTable(
+      await _log(
         eventType: 'immediate_cache_hit',
         userId: userId,
-        durationMs: duration,
+        durationMs: DateTime.now().difference(start).inMilliseconds,
         details: 'Returned ${posts.length} posts',
         extra: {'post_ids': posts.map((p) => p['postId']).toList()},
       );
       return posts;
     } catch (e) {
-      print('❌ [Cache] loadImmediatelyCachedPosts error: $e');
-      await _logToFastTable(
-        eventType: 'immediate_cache_load_error',
-        userId: userId,
-        details: e.toString(),
-      );
+      await _log(
+          eventType: 'immediate_cache_load_error',
+          userId: userId,
+          details: e.toString());
       return null;
     }
   }
 
-  // ── 2. Video caching ──────────────────────────────────────────────────────
+  // =========================================================================
+  // 2. VIDEO / IMAGE DISK CACHE
+  // =========================================================================
 
   static Future<File?> getCachedVideoFile(String videoUrl) async {
     final start = DateTime.now();
@@ -244,51 +240,31 @@ class FeedCacheService {
     try {
       final info = await _VideoCacheManager.instance.getFileFromCache(videoUrl);
       if (info != null && info.file.existsSync()) {
-        print('🎬 [Cache] Video CACHE HIT: $videoUrl');
-        await _logToFastTable(
-          eventType: 'video_cache_hit',
-          durationMs: DateTime.now().difference(start).inMilliseconds,
-          details: videoUrl,
-        );
+        await _log(
+            eventType: 'video_cache_hit',
+            durationMs: DateTime.now().difference(start).inMilliseconds,
+            details: videoUrl);
         return info.file;
-      } else {
-        print('🌐 [Cache] Video CACHE MISS: $videoUrl');
-        await _logToFastTable(
+      }
+      await _log(
           eventType: 'video_cache_miss',
           durationMs: DateTime.now().difference(start).inMilliseconds,
-          details: videoUrl,
-        );
-      }
-    } catch (e) {
-      print('❌ [Cache] getCachedVideoFile error: $e');
-    }
+          details: videoUrl);
+    } catch (_) {}
     return null;
   }
 
   static Future<File?> cacheVideoFile(String videoUrl) async {
-    final start = DateTime.now();
     if (videoUrl.isEmpty) return null;
     try {
       final cached = await getCachedVideoFile(videoUrl);
       if (cached != null) return cached;
-
-      print('📥 [Cache] cacheVideoFile: downloading $videoUrl');
       final file = await _VideoCacheManager.instance.getSingleFile(videoUrl);
-      final duration = DateTime.now().difference(start).inMilliseconds;
-      print('✅ [Cache] Video downloaded in ${duration}ms');
-      await _logToFastTable(
-        eventType: 'video_download',
-        durationMs: duration,
-        details: videoUrl,
-      );
       return file.existsSync() ? file : null;
-    } catch (e) {
-      print('❌ [Cache] cacheVideoFile error: $e');
+    } catch (_) {
       return null;
     }
   }
-
-  // ── 3. Image caching ──────────────────────────────────────────────────────
 
   static Future<File?> getCachedImageFile(String imageUrl) async {
     final start = DateTime.now();
@@ -296,296 +272,233 @@ class FeedCacheService {
     try {
       final info = await _ImageCacheManager.instance.getFileFromCache(imageUrl);
       if (info != null && info.file.existsSync()) {
-        print('🖼️ [Cache] Image CACHE HIT: $imageUrl');
-        await _logToFastTable(
-          eventType: 'image_cache_hit',
-          durationMs: DateTime.now().difference(start).inMilliseconds,
-          details: imageUrl,
-        );
+        await _log(
+            eventType: 'image_cache_hit',
+            durationMs: DateTime.now().difference(start).inMilliseconds,
+            details: imageUrl);
         return info.file;
-      } else {
-        print('🌐 [Cache] Image CACHE MISS: $imageUrl');
-        await _logToFastTable(
+      }
+      await _log(
           eventType: 'image_cache_miss',
           durationMs: DateTime.now().difference(start).inMilliseconds,
-          details: imageUrl,
-        );
-      }
-    } catch (e) {
-      print('❌ [Cache] getCachedImageFile error: $e');
-    }
+          details: imageUrl);
+    } catch (_) {}
     return null;
   }
 
   static Future<File?> cacheImageFile(String imageUrl) async {
-    final start = DateTime.now();
     if (imageUrl.isEmpty) return null;
     try {
       final cached = await getCachedImageFile(imageUrl);
       if (cached != null) return cached;
-
-      print('📥 [Cache] cacheImageFile: downloading $imageUrl');
       final file = await _ImageCacheManager.instance.getSingleFile(imageUrl);
-      final duration = DateTime.now().difference(start).inMilliseconds;
-      print('✅ [Cache] Image downloaded in ${duration}ms');
-      await _logToFastTable(
-        eventType: 'image_download',
-        durationMs: duration,
-        details: imageUrl,
-      );
       return file.existsSync() ? file : null;
-    } catch (e) {
-      print('❌ [Cache] cacheImageFile error: $e');
+    } catch (_) {
       return null;
     }
   }
 
-  // ── 4. Legacy "for-you" cache ─────────────────────────────────────────────
+  // =========================================================================
+  // 3. LEGACY ROLLING CACHE
+  // =========================================================================
 
   static Future<void> cacheForYouPosts(
-      List<Map<String, dynamic>> posts, String userId,
-      {List<Map<String, dynamic>>? nextBatchPosts,
-      bool forceUpdate = false}) async {
+    List<Map<String, dynamic>> posts,
+    String userId, {
+    List<Map<String, dynamic>>? nextBatchPosts,
+    bool forceUpdate = false,
+  }) async {
     final start = DateTime.now();
     try {
       final prefs = await SharedPreferences.getInstance();
-
       if (!forceUpdate) {
-        final lastUpdateAttempt = prefs.getInt(_lastCacheUpdateAttemptKey) ?? 0;
-        final timeSinceLastAttempt =
-            DateTime.now().millisecondsSinceEpoch - lastUpdateAttempt;
-        if (timeSinceLastAttempt < Duration(minutes: 1).inMilliseconds) return;
+        final last = prefs.getInt(_lastCacheUpdateAttemptKey) ?? 0;
+        if (DateTime.now().millisecondsSinceEpoch - last <
+            const Duration(minutes: 1).inMilliseconds) return;
       }
 
       final seenPosts = await getSeenPosts(userId);
-      final currentPostIds = posts
+      final currentIds = posts
           .map((p) => p['postId']?.toString() ?? '')
           .where((id) => id.isNotEmpty)
           .toSet();
-      final effectivelySeenPosts = {...seenPosts, ...currentPostIds};
-
-      List<Map<String, dynamic>> allAvailablePosts = [];
-      if (nextBatchPosts != null && nextBatchPosts.isNotEmpty) {
-        allAvailablePosts.addAll(nextBatchPosts);
-      }
-
-      final allUnseenPosts = allAvailablePosts.where((post) {
-        final postId = post['postId']?.toString() ?? '';
-        return postId.isNotEmpty && !effectivelySeenPosts.contains(postId);
+      final effectivelySeen = {...seenPosts, ...currentIds};
+      final allAvailable = nextBatchPosts ?? [];
+      final unseen = allAvailable.where((p) {
+        final id = p['postId']?.toString() ?? '';
+        return id.isNotEmpty && !effectivelySeen.contains(id);
       }).toList();
 
-      List<Map<String, dynamic>> postsToCache = [];
-      if (allUnseenPosts.isNotEmpty) {
-        postsToCache = allUnseenPosts.take(2).toList();
-      } else {
-        final existingCache = prefs.getString(_cachedForYouPostsKey);
-        if (existingCache != null) {
+      if (unseen.isEmpty) {
+        final existing = prefs.getString(_cachedForYouPostsKey);
+        if (existing != null) {
           try {
-            final data = jsonDecode(existingCache);
-            final cachedUserId = data['userId'] as String?;
-            final timestamp = data['timestamp'] as int;
-            final cacheAge = DateTime.now().millisecondsSinceEpoch - timestamp;
-            if (cachedUserId == userId &&
-                cacheAge < _cacheValidityDuration.inMilliseconds) {
-              return;
-            } else if (cachedUserId != userId) {
-              await _clearCache(userId);
-            }
+            final d = jsonDecode(existing) as Map<String, dynamic>;
+            final age =
+                DateTime.now().millisecondsSinceEpoch - (d['timestamp'] as int);
+            if (d['userId'] == userId &&
+                age < _cacheValidityDuration.inMilliseconds) return;
+            if (d['userId'] != userId) await _clearCache(userId);
           } catch (_) {}
         }
         return;
       }
 
-      if (postsToCache.isNotEmpty) {
-        await _markPostsAsHiddenInCurrentSession(postsToCache, userId);
-        final cacheData = {
-          'posts': postsToCache,
+      final toCache = unseen.take(2).toList();
+      await _markPostsAsHiddenInCurrentSession(toCache, userId);
+      await prefs.setString(
+        _cachedForYouPostsKey,
+        jsonEncode({
+          'posts': toCache,
           'timestamp': DateTime.now().millisecondsSinceEpoch,
           'userId': userId,
           'sessionId': _currentSessionId,
-        };
-        await prefs.setString(_cachedForYouPostsKey, jsonEncode(cacheData));
-        await prefs.setBool(_cacheUsedInSessionKey, false);
-        await prefs.setInt(
-            _lastCacheUpdateAttemptKey, DateTime.now().millisecondsSinceEpoch);
-        unawaited(_downloadAndCacheMedia(postsToCache));
-
-        final duration = DateTime.now().difference(start).inMilliseconds;
-        await _logToFastTable(
-          eventType: 'legacy_cache_write',
-          userId: userId,
-          durationMs: duration,
-          details: 'Cached ${postsToCache.length} posts',
-        );
-      }
-    } catch (e) {
-      print('❌ [Cache] cacheForYouPosts error: $e');
-    }
-  }
-
-  static Future<void> updateCacheAfterScroll(
-      String userId,
-      List<Map<String, dynamic>> currentBatch,
-      List<Map<String, dynamic>>? nextBatch) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final seenPosts = await getSeenPosts(userId);
-      final currentPostIds = currentBatch
-          .map((p) => p['postId']?.toString() ?? '')
-          .where((id) => id.isNotEmpty)
-          .toSet();
-      final effectivelySeenPosts = {...seenPosts, ...currentPostIds};
-
-      final cachedData = prefs.getString(_cachedForYouPostsKey);
-      if (cachedData == null) {
-        await cacheForYouPosts(currentBatch, userId, nextBatchPosts: nextBatch);
-        return;
-      }
-
-      try {
-        final data = jsonDecode(cachedData);
-        final cachedUserId = data['userId'] as String?;
-        if (cachedUserId != userId) {
-          await _clearCache(userId);
-          await cacheForYouPosts(currentBatch, userId,
-              nextBatchPosts: nextBatch);
-          return;
-        }
-
-        final cachedPosts = (data['posts'] as List)
-            .map<Map<String, dynamic>>((p) => Map<String, dynamic>.from(p))
-            .toList();
-
-        bool hasSeenCachedPost = cachedPosts.any((cp) =>
-            effectivelySeenPosts.contains(cp['postId']?.toString() ?? ''));
-
-        if (!hasSeenCachedPost) return;
-        if (nextBatch != null && nextBatch.isNotEmpty) {
-          await cacheForYouPosts(currentBatch, userId,
-              nextBatchPosts: nextBatch);
-        }
-      } catch (_) {
-        await cacheForYouPosts(currentBatch, userId, nextBatchPosts: nextBatch);
-      }
+        }),
+      );
+      await prefs.setBool(_cacheUsedInSessionKey, false);
+      await prefs.setInt(
+          _lastCacheUpdateAttemptKey, DateTime.now().millisecondsSinceEpoch);
+      unawaited(_downloadAndCacheMedia(toCache));
+      await _log(
+        eventType: 'legacy_cache_write',
+        userId: userId,
+        durationMs: DateTime.now().difference(start).inMilliseconds,
+        details: 'Cached ${toCache.length} posts',
+      );
     } catch (_) {}
   }
 
   static Future<List<Map<String, dynamic>>?> loadCachedForYouPosts(
       String userId) async {
     final start = DateTime.now();
-    if (_isLoadingCache) {
-      if (_cacheLoadCompleter != null) {
-        return await _cacheLoadCompleter!.future;
-      }
+    if (_isLoadingCache && _cacheLoadCompleter != null) {
+      return _cacheLoadCompleter!.future;
     }
-
     _isLoadingCache = true;
     _cacheLoadCompleter = Completer<List<Map<String, dynamic>>?>();
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      final currentSessionId = _currentSessionId;
-      final cacheUsedInSession = prefs.getBool(_cacheUsedInSessionKey) ?? false;
-
-      if (cacheUsedInSession) {
-        print('⚠️ [Cache] loadCachedForYouPosts: already used this session');
+      if (prefs.getBool(_cacheUsedInSessionKey) ?? false) {
         _cacheLoadCompleter!.complete(null);
         return null;
       }
-
-      final cachedData = prefs.getString(_cachedForYouPostsKey);
-      if (cachedData != null) {
-        final Map<String, dynamic> data = jsonDecode(cachedData);
-        final timestamp = data['timestamp'] as int;
+      final raw = prefs.getString(_cachedForYouPostsKey);
+      if (raw != null) {
+        final data = jsonDecode(raw) as Map<String, dynamic>;
         final cachedUserId = data['userId'] as String;
-        final cacheSessionId = data['sessionId'] as String?;
-        final cacheAge = DateTime.now().millisecondsSinceEpoch - timestamp;
+        final sessionId = data['sessionId'] as String?;
+        final age =
+            DateTime.now().millisecondsSinceEpoch - (data['timestamp'] as int);
+        final valid = cachedUserId == userId &&
+            age < _cacheValidityDuration.inMilliseconds;
 
-        final isValid = cachedUserId == userId &&
-            cacheAge < _cacheValidityDuration.inMilliseconds;
-        final isFromCurrentSession = cacheSessionId == currentSessionId;
-
-        if (isFromCurrentSession) {
-          print('⚠️ [Cache] loadCachedForYouPosts: cache from current session');
+        if (sessionId == _currentSessionId) {
           _cacheLoadCompleter!.complete(null);
           return null;
         }
-
-        if (isValid) {
+        if (valid) {
           final posts = (data['posts'] as List)
               .map<Map<String, dynamic>>((p) => Map<String, dynamic>.from(p))
               .toList();
           if (posts.isNotEmpty) {
             await prefs.setBool(_cacheUsedInSessionKey, true);
-            final duration = DateTime.now().difference(start).inMilliseconds;
-            print('✅ [Cache] loadCachedForYouPosts: returning ${posts.length} posts');
-            await _logToFastTable(
+            await _log(
               eventType: 'legacy_cache_hit',
               userId: userId,
-              durationMs: duration,
+              durationMs: DateTime.now().difference(start).inMilliseconds,
               details: 'Returned ${posts.length} posts',
             );
             _cacheLoadCompleter!.complete(posts);
             return posts;
           }
         } else {
-          print('⚠️ [Cache] loadCachedForYouPosts: cache invalid');
           await _clearCache(userId);
         }
-      } else {
-        print('⚠️ [Cache] loadCachedForYouPosts: no cache found');
-        await _logToFastTable(
+      }
+      await _log(
           eventType: 'legacy_cache_miss',
           userId: userId,
-          durationMs: DateTime.now().difference(start).inMilliseconds,
-        );
-      }
-    } catch (e) {
-      print('❌ [Cache] loadCachedForYouPosts error: $e');
+          durationMs: DateTime.now().difference(start).inMilliseconds);
+    } catch (_) {
     } finally {
       _isLoadingCache = false;
-      if (!_cacheLoadCompleter!.isCompleted) {
+      if (!_cacheLoadCompleter!.isCompleted)
         _cacheLoadCompleter!.complete(null);
-      }
       _cacheLoadCompleter = null;
     }
     return null;
   }
 
+  static Future<void> updateCacheAfterScroll(
+    String userId,
+    List<Map<String, dynamic>> currentBatch,
+    List<Map<String, dynamic>>? nextBatch,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final seenPosts = await getSeenPosts(userId);
+      final currentIds = currentBatch
+          .map((p) => p['postId']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toSet();
+      final effectivelySeen = {...seenPosts, ...currentIds};
+      final raw = prefs.getString(_cachedForYouPostsKey);
+      if (raw == null) {
+        await cacheForYouPosts(currentBatch, userId, nextBatchPosts: nextBatch);
+        return;
+      }
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      if (data['userId'] != userId) {
+        await _clearCache(userId);
+        await cacheForYouPosts(currentBatch, userId, nextBatchPosts: nextBatch);
+        return;
+      }
+      final cachedPosts = (data['posts'] as List)
+          .map<Map<String, dynamic>>((p) => Map<String, dynamic>.from(p))
+          .toList();
+      final hasSeen = cachedPosts.any(
+          (cp) => effectivelySeen.contains(cp['postId']?.toString() ?? ''));
+      if (hasSeen && nextBatch != null && nextBatch.isNotEmpty) {
+        await cacheForYouPosts(currentBatch, userId, nextBatchPosts: nextBatch);
+      }
+    } catch (_) {}
+  }
+
   static Future<void> safeCacheUpdate(
-      String userId,
-      List<Map<String, dynamic>> currentBatch,
-      List<Map<String, dynamic>> nextBatch) async {
+    String userId,
+    List<Map<String, dynamic>> currentBatch,
+    List<Map<String, dynamic>> nextBatch,
+  ) async {
     if (nextBatch.isEmpty) return;
     await Future.delayed(const Duration(milliseconds: 500));
-
     final seenPosts = await getSeenPosts(userId);
-    final currentPostIds = currentBatch
+    final currentIds = currentBatch
         .map((p) => p['postId']?.toString() ?? '')
         .where((id) => id.isNotEmpty)
         .toSet();
-    final effectivelySeenPosts = {...seenPosts, ...currentPostIds};
-
-    final unseenPosts = nextBatch.where((post) {
-      final postId = post['postId']?.toString() ?? '';
-      return postId.isNotEmpty && !effectivelySeenPosts.contains(postId);
+    final effectivelySeen = {...seenPosts, ...currentIds};
+    final unseen = nextBatch.where((p) {
+      final id = p['postId']?.toString() ?? '';
+      return id.isNotEmpty && !effectivelySeen.contains(id);
     }).toList();
-
-    if (unseenPosts.isNotEmpty) {
+    if (unseen.isNotEmpty) {
       await cacheForYouPosts(currentBatch, userId,
           nextBatchPosts: nextBatch, forceUpdate: true);
     }
   }
 
-  // ── Seen-posts tracking ───────────────────────────────────────────────────
+  // =========================================================================
+  // SEEN-POSTS TRACKING
+  // =========================================================================
 
   static Future<Set<String>> getSeenPosts(String userId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final list = prefs.getStringList('${_seenPostsKey}_$userId') ?? [];
-      return Set<String>.from(list);
+      return Set<String>.from(
+          prefs.getStringList('${_seenPostsKey}_$userId') ?? []);
     } catch (_) {
-      return <String>{};
+      return {};
     }
   }
 
@@ -593,23 +506,20 @@ class FeedCacheService {
     final start = DateTime.now();
     try {
       final prefs = await SharedPreferences.getInstance();
-      final seenPosts = await getSeenPosts(userId);
-      seenPosts.add(postId);
-      final trimmed = seenPosts.toList();
+      final seen = await getSeenPosts(userId);
+      seen.add(postId);
+      final trimmed = seen.toList();
       if (trimmed.length > 1000) {
         trimmed.removeRange(0, trimmed.length - 1000);
       }
       await prefs.setStringList('${_seenPostsKey}_$userId', trimmed);
-      print('👁️ [Cache] Marked post $postId as seen for user $userId');
-      await _logToFastTable(
+      await _log(
         eventType: 'post_marked_seen',
         userId: userId,
         durationMs: DateTime.now().difference(start).inMilliseconds,
         details: postId,
       );
-    } catch (e) {
-      print('❌ [Cache] markPostAsSeen error: $e');
-    }
+    } catch (_) {}
   }
 
   static Future<void> clearSeenPosts(String userId) async {
@@ -619,15 +529,17 @@ class FeedCacheService {
     } catch (_) {}
   }
 
-  // ── Session-hidden tracking ───────────────────────────────────────────────
+  // =========================================================================
+  // SESSION-HIDDEN TRACKING
+  // =========================================================================
 
   static Future<void> _markPostsAsHiddenInCurrentSession(
       List<Map<String, dynamic>> posts, String userId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final hidden = await _getCurrentSessionHiddenPosts(userId);
-      for (final post in posts) {
-        final id = post['postId']?.toString();
+      for (final p in posts) {
+        final id = p['postId']?.toString();
         if (id != null && id.isNotEmpty) hidden.add(id);
       }
       await prefs.setStringList(
@@ -639,11 +551,10 @@ class FeedCacheService {
       String userId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final list =
-          prefs.getStringList('$_currentSessionHiddenKey$userId') ?? [];
-      return Set<String>.from(list);
+      return Set<String>.from(
+          prefs.getStringList('$_currentSessionHiddenKey$userId') ?? []);
     } catch (_) {
-      return <String>{};
+      return {};
     }
   }
 
@@ -658,42 +569,49 @@ class FeedCacheService {
       List<Map<String, dynamic>> posts, String userId) async {
     try {
       final hidden = await _getCurrentSessionHiddenPosts(userId);
-      return posts.where((post) {
-        final id = post['postId']?.toString() ?? '';
-        return id.isNotEmpty && !hidden.contains(id);
-      }).toList();
+      return posts
+          .where((p) =>
+              (p['postId']?.toString() ?? '').isNotEmpty &&
+              !hidden.contains(p['postId']?.toString()))
+          .toList();
     } catch (_) {
       return posts;
     }
   }
 
-  // ── Cache clearing ────────────────────────────────────────────────────────
+  // =========================================================================
+  // CACHE CLEARING
+  // =========================================================================
 
   static Future<void> clearCache(String userId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_cachedForYouPostsKey);
-      await prefs.remove(_immediatePostsCacheKey);
-      await prefs.remove(_mediaPreloadedKey);
-      await prefs.remove(_cacheUsedInSessionKey);
-      await prefs.remove(_lastCacheUpdateAttemptKey);
-      await prefs.remove('$_currentSessionHiddenKey$userId');
-      await _ImageCacheManager.instance.emptyCache();
-      await _VideoCacheManager.instance.emptyCache();
-      print('🗑️ [Cache] Cache cleared for user $userId');
-      await _logToFastTable(eventType: 'cache_cleared', userId: userId);
+      _cachedLastUserId = null;
+      await Future.wait([
+        prefs.remove(_cachedForYouPostsKey),
+        prefs.remove(_immediatePostsCacheKey),
+        prefs.remove(_mediaPreloadedKey),
+        prefs.remove(_cacheUsedInSessionKey),
+        prefs.remove(_lastCacheUpdateAttemptKey),
+        prefs.remove('$_currentSessionHiddenKey$userId'),
+        _ImageCacheManager.instance.emptyCache(),
+        _VideoCacheManager.instance.emptyCache(),
+      ]);
+      await _log(eventType: 'cache_cleared', userId: userId);
     } catch (_) {}
   }
 
   static Future<void> _clearCache(String userId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_cachedForYouPostsKey);
-      await prefs.remove(_immediatePostsCacheKey);
-      await prefs.remove(_mediaPreloadedKey);
-      await prefs.remove(_cacheUsedInSessionKey);
-      await prefs.remove(_lastCacheUpdateAttemptKey);
-      await prefs.remove('$_currentSessionHiddenKey$userId');
+      await Future.wait([
+        prefs.remove(_cachedForYouPostsKey),
+        prefs.remove(_immediatePostsCacheKey),
+        prefs.remove(_mediaPreloadedKey),
+        prefs.remove(_cacheUsedInSessionKey),
+        prefs.remove(_lastCacheUpdateAttemptKey),
+        prefs.remove('$_currentSessionHiddenKey$userId'),
+      ]);
     } catch (_) {}
   }
 
@@ -715,8 +633,7 @@ class FeedCacheService {
   static Future<void> clearCurrentSessionSeenPosts(String userId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final sessionId = _currentSessionId;
-      await prefs.remove('${_seenPostsKey}_${sessionId}_$userId');
+      await prefs.remove('${_seenPostsKey}_${_currentSessionId}_$userId');
     } catch (_) {}
   }
 
@@ -726,11 +643,9 @@ class FeedCacheService {
 
   static Future<void> _downloadAndCacheMedia(
       List<Map<String, dynamic>> posts) async {
-    print('📥 [Cache] Starting background media download for ${posts.length} posts');
     for (final post in posts) {
       final postUrl = post['postUrl']?.toString() ?? '';
       final profImage = post['profImage']?.toString() ?? '';
-
       if (postUrl.isNotEmpty) {
         if (_isVideoUrl(postUrl)) {
           unawaited(_safeDownloadVideo(postUrl));
@@ -738,7 +653,6 @@ class FeedCacheService {
           unawaited(_safeDownloadImage(postUrl));
         }
       }
-
       if (profImage.isNotEmpty &&
           profImage != 'default' &&
           _isImageUrl(profImage)) {
@@ -749,36 +663,26 @@ class FeedCacheService {
 
   static Future<void> _safeDownloadImage(String url) async {
     final start = DateTime.now();
-    print('🖼️ [Cache] Downloading image: $url');
     try {
       await _ImageCacheManager.instance.getSingleFile(url);
-      final duration = DateTime.now().difference(start).inMilliseconds;
-      print('✅ [Cache] Image downloaded in ${duration}ms');
-      await _logToFastTable(
+      await _log(
         eventType: 'background_image_download',
-        durationMs: duration,
+        durationMs: DateTime.now().difference(start).inMilliseconds,
         details: url,
       );
-    } catch (e) {
-      print('❌ [Cache] Image download failed: $url - $e');
-    }
+    } catch (_) {}
   }
 
   static Future<void> _safeDownloadVideo(String url) async {
     final start = DateTime.now();
-    print('🎬 [Cache] Downloading video: $url');
     try {
       await _VideoCacheManager.instance.getSingleFile(url);
-      final duration = DateTime.now().difference(start).inMilliseconds;
-      print('✅ [Cache] Video downloaded in ${duration}ms');
-      await _logToFastTable(
+      await _log(
         eventType: 'background_video_download',
-        durationMs: duration,
+        durationMs: DateTime.now().difference(start).inMilliseconds,
         details: url,
       );
-    } catch (e) {
-      print('❌ [Cache] Video download failed: $url - $e');
-    }
+    } catch (_) {}
   }
 
   static bool _isVideoUrl(String url) {
