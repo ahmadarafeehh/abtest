@@ -28,29 +28,7 @@ enum _InitState { loading, ready, error }
 
 final _appInitState = ValueNotifier<_InitState>(_InitState.loading);
 
-int _mainStartTime = 0;
-int _firebaseSupabaseReadyTime = 0;
-int _realAppBuiltTime = 0;
-bool _firstFrameLogged = false;
-
-void _logStartupEvent(String eventType, int durationMs, {String? details}) {
-  if (_firebaseSupabaseReadyTime == 0) return;
-  Future.microtask(() async {
-    try {
-      await Supabase.instance.client.from('fast').insert({
-        'event_type': eventType,
-        'user_id': null,
-        'timestamp': DateTime.now().toIso8601String(),
-        'duration_ms': durationMs,
-        'details': details,
-        'extra_data': {'phase': eventType},
-      });
-    } catch (_) {}
-  });
-}
-
 void main() async {
-  _mainStartTime = DateTime.now().millisecondsSinceEpoch;
   WidgetsFlutterBinding.ensureInitialized();
 
   // ── Read the persisted userId from disk BEFORE the first frame ────────────
@@ -66,24 +44,11 @@ void main() async {
     ),
   );
 
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (!_firstFrameLogged) {
-      _firstFrameLogged = true;
-      final elapsed = DateTime.now().millisecondsSinceEpoch - _mainStartTime;
-      _logStartupEvent('first_frame', elapsed,
-          details: 'First frame rendered (skeleton)');
-    }
-  });
-
   try {
     await Future.wait([
       _initializeFirebase(),
       _initializeSupabase(),
     ]);
-    _firebaseSupabaseReadyTime = DateTime.now().millisecondsSinceEpoch;
-    final initDuration = _firebaseSupabaseReadyTime - _mainStartTime;
-    _logStartupEvent('firebase_supabase_ready', initDuration,
-        details: 'Both SDKs initialised');
 
     _appInitState.value = _InitState.ready;
   } catch (_) {
@@ -194,8 +159,8 @@ class _AppBootstrap extends StatelessWidget {
             if (state == _InitState.loading) {
               final isDark = themeProvider.themeMode == ThemeMode.dark ||
                   (themeProvider.themeMode == ThemeMode.system &&
-                      WidgetsBinding.instance.platformDispatcher
-                              .platformBrightness ==
+                      WidgetsBinding
+                              .instance.platformDispatcher.platformBrightness ==
                           Brightness.dark);
               return MaterialApp(
                 debugShowCheckedModeBanner: false,
@@ -224,13 +189,6 @@ class _OptimizedMyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (_realAppBuiltTime == 0) {
-      _realAppBuiltTime = DateTime.now().millisecondsSinceEpoch;
-      final elapsed = _realAppBuiltTime - _mainStartTime;
-      _logStartupEvent('real_app_build_start', elapsed,
-          details: 'Building real app after SDKs ready');
-    }
-
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => UserProvider()),
@@ -291,8 +249,7 @@ class ErrorApp extends StatelessWidget {
               Icon(Icons.error_outline, color: Colors.red, size: 64),
               SizedBox(height: 20),
               Text('App initialization failed',
-                  style: TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold)),
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               SizedBox(height: 10),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: 32.0),
@@ -343,8 +300,7 @@ class _OrientationPersistentWrapperState
     final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness:
-          isDarkMode ? Brightness.light : Brightness.dark,
+      statusBarIconBrightness: isDarkMode ? Brightness.light : Brightness.dark,
       systemNavigationBarColor:
           isDarkMode ? const Color(0xFF121212) : Colors.white,
       systemNavigationBarIconBrightness:
@@ -381,11 +337,8 @@ class _DebugHomeState extends State<DebugHome> {
     try {
       final firebaseUser = FirebaseAuth.instance.currentUser;
       setState(() => _msg = 'Firebase UID: ${firebaseUser?.uid ?? "null"}');
-      final resp = await _supabase
-          .from('posts')
-          .select('postId')
-          .limit(1)
-          .maybeSingle();
+      final resp =
+          await _supabase.from('posts').select('postId').limit(1).maybeSingle();
       setState(
           () => _msg = 'Supabase query result: ${resp?.toString() ?? "null"}');
     } catch (e) {
