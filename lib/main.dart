@@ -16,6 +16,7 @@ import 'package:Ratedly/services/notification_service.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:Ratedly/services/country_service.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
+import 'package:Ratedly/services/feed_cache_service.dart';
 
 const bool useDebugHome = false;
 
@@ -23,37 +24,22 @@ const String supabaseUrl = 'https://tbiemcbqjjjsgumnjlqq.supabase.co';
 const String supabaseAnonKey =
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRiaWVtY2Jxampqc2d1bW5qbHFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQzMTQ2NjQsImV4cCI6MjA2OTg5MDY2NH0.JAgFU3fDBGAlMFuHQDqiu35GFe-QYMJfoaIc3mI26yM';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tracks whether Firebase + Supabase are done initialising.
-// Stored at module level so the async init code (running after runApp) can
-// poke it from outside the widget tree.
-// ─────────────────────────────────────────────────────────────────────────────
 enum _InitState { loading, ready, error }
 
 final _appInitState = ValueNotifier<_InitState>(_InitState.loading);
 
-// Startup timing global variables
 int _mainStartTime = 0;
-int _bindingInitializedTime = 0;
-int _runAppTime = 0;
-int _firstFrameTime = 0;
 int _firebaseSupabaseReadyTime = 0;
 int _realAppBuiltTime = 0;
 bool _firstFrameLogged = false;
 
-// Helper to log startup events to the 'fast' table (non‑blocking)
 void _logStartupEvent(String eventType, int durationMs, {String? details}) {
-  // Only attempt after Supabase is ready
-  if (_firebaseSupabaseReadyTime == 0) {
-    // Store in a queue? For simplicity, we skip. In practice, we could delay.
-    return;
-  }
+  if (_firebaseSupabaseReadyTime == 0) return;
   Future.microtask(() async {
     try {
-      final supabase = Supabase.instance.client;
-      await supabase.from('fast').insert({
+      await Supabase.instance.client.from('fast').insert({
         'event_type': eventType,
-        'user_id': null, // not known at this stage
+        'user_id': null,
         'timestamp': DateTime.now().toIso8601String(),
         'duration_ms': durationMs,
         'details': details,
@@ -66,29 +52,29 @@ void _logStartupEvent(String eventType, int durationMs, {String? details}) {
 void main() async {
   _mainStartTime = DateTime.now().millisecondsSinceEpoch;
   WidgetsFlutterBinding.ensureInitialized();
-  _bindingInitializedTime = DateTime.now().millisecondsSinceEpoch;
 
-  // ✅ Paint the skeleton on screen immediately — no SDK blocking the first frame.
+  // ── Read the persisted userId from disk BEFORE the first frame ────────────
+  // This takes ~2 ms and means FeedCacheService.getLastUserIdSync() returns a
+  // non-null value for returning users on the very first frame – before auth
+  // resolves (which takes 677–2800 ms).
+  await FeedCacheService.warmUserIdCache();
+
   runApp(
     ChangeNotifierProvider(
       create: (_) => ThemeProvider(),
       child: _AppBootstrap(stateNotifier: _appInitState),
     ),
   );
-  _runAppTime = DateTime.now().millisecondsSinceEpoch;
 
-  // Capture first frame time
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    _firstFrameTime = DateTime.now().millisecondsSinceEpoch;
     if (!_firstFrameLogged) {
       _firstFrameLogged = true;
-      final elapsed = _firstFrameTime - _mainStartTime;
+      final elapsed = DateTime.now().millisecondsSinceEpoch - _mainStartTime;
       _logStartupEvent('first_frame', elapsed,
           details: 'First frame rendered (skeleton)');
     }
   });
 
-  // ✅ Firebase + Supabase are independent; run them in parallel.
   try {
     await Future.wait([
       _initializeFirebase(),
@@ -99,16 +85,14 @@ void main() async {
     _logStartupEvent('firebase_supabase_ready', initDuration,
         details: 'Both SDKs initialised');
 
-    _appInitState.value = _InitState.ready; // triggers swap to real app
+    _appInitState.value = _InitState.ready;
   } catch (_) {
     _appInitState.value = _InitState.error;
   }
 
-  // Ads, analytics, notifications — fully non‑blocking background work.
   _initializeNonEssentialServicesInBackground();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 Future<void> _initializeFirebase() async {
   if (kIsWeb) {
     await Firebase.initializeApp(
@@ -163,17 +147,10 @@ Future<void> _initializeOtherServicesInBackground() async {
   } catch (_) {}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// _AppBootstrap
-// While SDKs are loading  → shows FeedSkeleton (matches the real feed layout)
-// Once SDKs are ready     → swaps to the real app
-// On error               → shows ErrorApp
-// ─────────────────────────────────────────────────────────────────────────────
 class _AppBootstrap extends StatelessWidget {
   final ValueNotifier<_InitState> stateNotifier;
   const _AppBootstrap({required this.stateNotifier});
 
-  // Shared theme objects — defined once, reused by both skeleton and real app.
   static final _lightTheme = ThemeData.light().copyWith(
     scaffoldBackgroundColor: Colors.grey[100],
     bottomNavigationBarTheme: BottomNavigationBarThemeData(
@@ -207,7 +184,6 @@ class _AppBootstrap extends StatelessWidget {
         return ValueListenableBuilder<_InitState>(
           valueListenable: stateNotifier,
           builder: (context, state, _) {
-            // ── Error state ──────────────────────────────────────────────
             if (state == _InitState.error) {
               return MaterialApp(
                 debugShowCheckedModeBanner: false,
@@ -215,12 +191,11 @@ class _AppBootstrap extends StatelessWidget {
               );
             }
 
-            // ── Loading state — show feed skeleton immediately ───────────
             if (state == _InitState.loading) {
               final isDark = themeProvider.themeMode == ThemeMode.dark ||
                   (themeProvider.themeMode == ThemeMode.system &&
-                      WidgetsBinding
-                              .instance.platformDispatcher.platformBrightness ==
+                      WidgetsBinding.instance.platformDispatcher
+                              .platformBrightness ==
                           Brightness.dark);
               return MaterialApp(
                 debugShowCheckedModeBanner: false,
@@ -231,7 +206,6 @@ class _AppBootstrap extends StatelessWidget {
               );
             }
 
-            // ── Ready — boot the real app ────────────────────────────────
             return _OptimizedMyApp(
               lightTheme: _lightTheme,
               darkTheme: _darkTheme,
@@ -243,11 +217,6 @@ class _AppBootstrap extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// _OptimizedMyApp
-// Only instantiated AFTER Firebase + Supabase are ready.
-// NOTE: ThemeProvider is NOT created here — it lives in _AppBootstrap above.
-// ─────────────────────────────────────────────────────────────────────────────
 class _OptimizedMyApp extends StatelessWidget {
   final ThemeData lightTheme;
   final ThemeData darkTheme;
@@ -255,7 +224,6 @@ class _OptimizedMyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Record when the real app widget tree starts building
     if (_realAppBuiltTime == 0) {
       _realAppBuiltTime = DateTime.now().millisecondsSinceEpoch;
       final elapsed = _realAppBuiltTime - _mainStartTime;
@@ -272,7 +240,7 @@ class _OptimizedMyApp extends StatelessWidget {
       ],
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) {
-          final app = MaterialApp(
+          return MaterialApp(
             debugShowCheckedModeBanner: false,
             title: 'Ratedly',
             theme: lightTheme,
@@ -281,16 +249,12 @@ class _OptimizedMyApp extends StatelessWidget {
             home: useDebugHome ? const DebugHome() : const AuthWrapper(),
             navigatorObservers: [CountryCheckObserver()],
           );
-          return app;
         },
       ),
     );
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CountryCheckObserver — unchanged
-// ─────────────────────────────────────────────────────────────────────────────
 class CountryCheckObserver extends NavigatorObserver {
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
@@ -313,9 +277,6 @@ class CountryCheckObserver extends NavigatorObserver {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ErrorApp — unchanged
-// ─────────────────────────────────────────────────────────────────────────────
 class ErrorApp extends StatelessWidget {
   const ErrorApp({super.key});
 
@@ -329,10 +290,9 @@ class ErrorApp extends StatelessWidget {
             children: const [
               Icon(Icons.error_outline, color: Colors.red, size: 64),
               SizedBox(height: 20),
-              Text(
-                'App initialization failed',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
+              Text('App initialization failed',
+                  style: TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold)),
               SizedBox(height: 10),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: 32.0),
@@ -349,9 +309,6 @@ class ErrorApp extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// OrientationPersistentWrapper — unchanged
-// ─────────────────────────────────────────────────────────────────────────────
 class OrientationPersistentWrapper extends StatefulWidget {
   const OrientationPersistentWrapper({super.key});
 
@@ -386,7 +343,8 @@ class _OrientationPersistentWrapperState
     final isDarkMode = themeProvider.themeMode == ThemeMode.dark;
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness: isDarkMode ? Brightness.light : Brightness.dark,
+      statusBarIconBrightness:
+          isDarkMode ? Brightness.light : Brightness.dark,
       systemNavigationBarColor:
           isDarkMode ? const Color(0xFF121212) : Colors.white,
       systemNavigationBarIconBrightness:
@@ -402,9 +360,6 @@ class _OrientationPersistentWrapperState
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DebugHome — unchanged
-// ─────────────────────────────────────────────────────────────────────────────
 class DebugHome extends StatefulWidget {
   const DebugHome({Key? key}) : super(key: key);
 
@@ -426,8 +381,11 @@ class _DebugHomeState extends State<DebugHome> {
     try {
       final firebaseUser = FirebaseAuth.instance.currentUser;
       setState(() => _msg = 'Firebase UID: ${firebaseUser?.uid ?? "null"}');
-      final resp =
-          await _supabase.from('posts').select('postId').limit(1).maybeSingle();
+      final resp = await _supabase
+          .from('posts')
+          .select('postId')
+          .limit(1)
+          .maybeSingle();
       setState(
           () => _msg = 'Supabase query result: ${resp?.toString() ?? "null"}');
     } catch (e) {
@@ -445,11 +403,9 @@ class _DebugHomeState extends State<DebugHome> {
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
-          child: Text(
-            _msg,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 16),
-          ),
+          child: Text(_msg,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 16)),
         ),
       ),
     );
