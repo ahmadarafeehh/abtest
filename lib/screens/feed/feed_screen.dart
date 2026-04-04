@@ -125,7 +125,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   String? _currentPlayingPostId;
 
   final Map<String, Map<String, dynamic>> _postCache = {};
-  static const int _preloadCount = 2;
 
   InterstitialAd? _interstitialAd;
   int _postViewCount = 0;
@@ -152,7 +151,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   final Map<String, ImageProvider> _loadedImageProviders = {};
   final List<Map<String, dynamic>> _visiblePosts = [];
   int _currentVisibleIndex = 0;
-  static const int _visiblePostsCount = 3;
 
   static const int _initialBatchSize = 10;
 
@@ -164,16 +162,13 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   final Set<String> _postsBeingPreloaded = {};
   final Set<String> _postsFullyPreloaded = {};
 
+  // Guards so _tryLoadCacheWithPersistedUserId and _loadInitialData don't race.
   bool _cacheLoadAttempted = false;
   bool _cacheLoaded = false;
   Timer? _delayedCacheUpdateTimer;
 
   bool _followingIdsLoaded = false;
-
-  // ── Tracks whether we've already written the immediate startup cache ───────
   bool _immediatePostsCached = false;
-
-  // ── Track app start time for first‑post timing ────────────────────────────
   DateTime? _appStartTime;
 
   _ColorSet _getColors(ThemeProvider themeProvider) {
@@ -202,8 +197,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _postCache[postId] = Map<String, dynamic>.from(post);
     }
   }
-
-  Map<String, dynamic>? _getCachedPost(String postId) => _postCache[postId];
 
   bool _isVideoFile(String url) {
     if (url.isEmpty) return false;
@@ -315,9 +308,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       if (mediaPreloaded >= mediaToPreload && !completer.isCompleted) {
         _postsBeingPreloaded.remove(postId);
         _postsFullyPreloaded.add(postId);
-        if (mounted) {
-          setState(() => _postReadyToShow[postId] = true);
-        }
+        if (mounted) setState(() => _postReadyToShow[postId] = true);
         completer.complete();
       }
     }
@@ -344,22 +335,20 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     final imageUrls = _getAllImageUrlsFromPost(post);
-    if (imageUrls.isNotEmpty) {
-      for (final imageUrl in imageUrls) {
-        if (imageUrl.isNotEmpty && !_imagePreloaded.containsKey(imageUrl)) {
-          mediaToPreload++;
-          _preloadImage(imageUrl, postId).then((_) {
-            checkCompletion();
-          }).catchError((e, stack) async {
-            await _logFeedError(
-              operation: '_preloadAllMediaForPost/image',
-              error: e,
-              stack: stack,
-              additionalData: {'postId': postId, 'imageUrl': imageUrl},
-            );
-            checkCompletion();
-          });
-        }
+    for (final imageUrl in imageUrls) {
+      if (imageUrl.isNotEmpty && !_imagePreloaded.containsKey(imageUrl)) {
+        mediaToPreload++;
+        _preloadImage(imageUrl, postId).then((_) {
+          checkCompletion();
+        }).catchError((e, stack) async {
+          await _logFeedError(
+            operation: '_preloadAllMediaForPost/image',
+            error: e,
+            stack: stack,
+            additionalData: {'postId': postId, 'imageUrl': imageUrl},
+          );
+          checkCompletion();
+        });
       }
     }
 
@@ -458,10 +447,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
   Future<void> _preloadRegularImage(String imageUrl, String postId) async {
     try {
-      // Check disk cache first (written by FeedCacheService).
       final cachedFile = await FeedCacheService.getCachedImageFile(imageUrl);
       if (cachedFile != null) {
-        print('🖼️ [Feed] Image from CACHE for $postId: $imageUrl');
         final provider = FileImage(cachedFile);
         await _loadImageIntoMemory(provider);
         _loadedImageProviders[imageUrl] = provider;
@@ -469,13 +456,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         return;
       }
 
-      print('🌐 [Feed] Image from NETWORK for $postId: $imageUrl');
       final file = await DefaultCacheManager().getSingleFile(
         imageUrl,
-        headers: const {
-          'Cache-Control': 'max-age=604800',
-          'Pragma': 'cache',
-        },
+        headers: const {'Cache-Control': 'max-age=604800', 'Pragma': 'cache'},
       );
       if (file.existsSync()) {
         _cachedImageInfo[imageUrl] = FileInfo(
@@ -567,16 +550,13 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     try {
       VideoPlayerController controller;
 
-      // ── Prefer a locally cached file so playback starts instantly ──────────
       final cachedFile = await FeedCacheService.getCachedVideoFile(videoUrl);
       if (cachedFile != null) {
-        print('🎬 [Feed] Using CACHED video file for $postId');
         controller = VideoPlayerController.file(
           cachedFile,
           videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
         );
       } else {
-        print('🌐 [Feed] Using NETWORK video for $postId');
         controller = VideoPlayerController.networkUrl(
           Uri.parse(videoUrl),
           videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
@@ -597,7 +577,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _checkAndMarkPostReady(postId);
       completer.complete();
     } catch (e, stack) {
-      print('❌ [Feed] Video init error for $postId: $e');
       await _logFeedError(
         operation: '_initializeFeedVideoController',
         error: e,
@@ -629,8 +608,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     final currentPosts = _selectedTab == 1 ? _forYouPosts : _followingPosts;
     if (currentPosts.isEmpty) return;
 
-    int preloadStart = max(0, centerIndex - _mediaPreloadBehind);
-    int preloadEnd =
+    final preloadStart = max(0, centerIndex - _mediaPreloadBehind);
+    final preloadEnd =
         min(currentPosts.length - 1, centerIndex + _mediaPreloadAhead);
 
     final postsToPreload = <Map<String, dynamic>>[];
@@ -647,8 +626,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
     if (postsToPreload.isNotEmpty) _preloadAllMediaForPosts(postsToPreload);
 
-    int visibleStart = max(0, centerIndex - 1);
-    int visibleEnd = min(currentPosts.length - 1, centerIndex + 1);
+    final visibleStart = max(0, centerIndex - 1);
+    final visibleEnd = min(currentPosts.length - 1, centerIndex + 1);
     _visiblePosts.clear();
     for (int i = visibleStart; i <= visibleEnd; i++) {
       if (i < currentPosts.length) _visiblePosts.add(currentPosts[i]);
@@ -676,7 +655,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
 
     final videoUrlsToRemove = <String>[];
     for (final url in _feedVideoControllers.keys) {
-      bool isInAnyPost =
+      final isInAnyPost =
           currentPosts.any((p) => p['postUrl']?.toString() == url);
       if (!isInAnyPost && !preloadedUrls.contains(url)) {
         videoUrlsToRemove.add(url);
@@ -699,7 +678,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     }
 
     final keysToRemove = _feedVideoControllers.entries
-        .where((e) => e.value == null || !e.value.value.isInitialized)
+        .where((e) => !e.value.value.isInitialized)
         .map((e) => e.key)
         .toList();
     for (final key in keysToRemove) {
@@ -774,100 +753,121 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    _appStartTime = DateTime.now(); // Record app open time
+    _appStartTime = DateTime.now();
     WidgetsBinding.instance.addObserver(this);
     FeedCacheService.resetSession();
     _followingPageController = PageController();
     _forYouPageController = PageController();
-    _loadCachedPostsLightningFast();
+
+    // Use the userId that was read from disk in main() – zero async wait.
+    // This lets us load cached posts before auth resolves (saves 677–2800 ms).
+    _tryLoadCacheWithPersistedUserId();
+
     _loadInterstitialAd();
   }
+
+  // ===========================================================================
+  // didChangeDependencies – fires when auth resolves
+  // ===========================================================================
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     final userProvider = Provider.of<UserProvider>(context, listen: false);
-    if (userProvider.firebaseUid != null && currentUserId == null) {
-      currentUserId = userProvider.firebaseUid;
-      _unreadCountStream = _createUnreadCountStream();
-      _loadInitialData();
-    } else if (userProvider.firebaseUid == null &&
-        userProvider.supabaseUid != null &&
-        currentUserId == null) {
-      currentUserId = userProvider.supabaseUid;
-      _unreadCountStream = _createUnreadCountStream();
-      _loadInitialData();
+    final resolvedId = userProvider.firebaseUid ?? userProvider.supabaseUid;
+
+    if (resolvedId != null && resolvedId.isNotEmpty) {
+      // Always persist so the next cold start can read it without waiting for auth.
+      unawaited(FeedCacheService.persistLastUserId(resolvedId));
+
+      if (currentUserId == null) {
+        // First time we learn the userId this session.
+        currentUserId = resolvedId;
+        _unreadCountStream = _createUnreadCountStream();
+        _loadInitialData();
+      } else if (currentUserId != resolvedId) {
+        // Auth resolved to a DIFFERENT user than the persisted tentative one
+        // (e.g. logged out and back in as someone else). Clear stale cache.
+        currentUserId = resolvedId;
+        unawaited(FeedCacheService.clearCache(resolvedId));
+        _forYouPosts = [];
+        _followingPosts = [];
+        _essentialUiReady = false;
+        _cacheLoaded = false;
+        _cacheLoadAttempted = false;
+        _immediatePostsCached = false;
+        _unreadCountStream = _createUnreadCountStream();
+        _loadInitialData();
+      }
+      // else: same userId, already loading – nothing to do.
     } else if (currentUserId == null) {
       _loadInitialData();
     }
   }
 
   // ===========================================================================
-  // STARTUP CACHE LOADING
+  // STARTUP CACHE LOADING (uses persisted userId, no auth needed)
   // ===========================================================================
 
-  Future<void> _loadCachedPostsLightningFast() async {
+  /// Reads the last-known userId from memory (put there by
+  /// FeedCacheService.warmUserIdCache() in main()) and immediately loads the
+  /// immediate cache. This runs before auth resolves, so returning users see
+  /// cached posts in ~50–80 ms instead of waiting 677–2800 ms for auth.
+  Future<void> _tryLoadCacheWithPersistedUserId() async {
     if (_cacheLoadAttempted) return;
     _cacheLoadAttempted = true;
 
-    if (currentUserId == null || currentUserId!.isEmpty) {
-      currentUserId = FirebaseAuth.instance.currentUser?.uid;
-    }
-    if (currentUserId == null || currentUserId!.isEmpty) {
+    // getLastUserIdSync() returns the value warmed synchronously in main().
+    final persistedId = FeedCacheService.getLastUserIdSync();
+
+    if (persistedId == null || persistedId.isEmpty) {
+      // Fresh install – nothing cached, wait for auth to arrive via
+      // didChangeDependencies.
       _essentialUiReady = true;
       if (mounted) setState(() {});
       return;
     }
 
+    // Use the persisted userId tentatively. skipUserIdCheck=true because the
+    // cache was written for this same user; auth hasn't fired yet so we can't
+    // verify, but it's safe to display.
     try {
-      print('⚡ [Feed] Loading immediate cache...');
-      List<Map<String, dynamic>>? cachedPosts =
-          await FeedCacheService.loadImmediatelyCachedPosts(currentUserId!);
-      if (cachedPosts != null && cachedPosts.isNotEmpty) {
-        print('✅ [Feed] Immediate cache loaded with ${cachedPosts.length} posts');
-      } else {
-        print('⚠️ [Feed] No immediate cache, trying legacy cache...');
-        cachedPosts ??=
-            await FeedCacheService.loadCachedForYouPosts(currentUserId!);
-        if (cachedPosts != null && cachedPosts.isNotEmpty) {
-          print('✅ [Feed] Legacy cache loaded with ${cachedPosts.length} posts');
-        } else {
-          print('⚠️ [Feed] No cache available at all');
-        }
-      }
+      List<Map<String, dynamic>>? posts =
+          await FeedCacheService.loadImmediatelyCachedPosts(
+        persistedId,
+        skipUserIdCheck: true,
+      );
+      posts ??= await FeedCacheService.loadCachedForYouPosts(persistedId);
 
-      if (cachedPosts != null && cachedPosts.isNotEmpty) {
+      if (posts != null && posts.isNotEmpty) {
         _cacheLoaded = true;
+        currentUserId ??= persistedId; // tentative until auth confirms
+
         if (mounted) {
           setState(() {
-            _forYouPosts = cachedPosts!;
+            _forYouPosts = posts!;
             _essentialUiReady = true;
           });
 
-          // Log first‑post from cache timing
           if (_appStartTime != null) {
-            final elapsedMs = DateTime.now().difference(_appStartTime!).inMilliseconds;
-            unawaited(
-              _supabase.from('fast').insert({
-                'event_type': 'first_post_from_cache',
-                'user_id': currentUserId,
-                'timestamp': DateTime.now().toIso8601String(),
-                'duration_ms': elapsedMs,
-                'details': 'First post displayed from immediate/legacy cache',
-                'extra_data': {'post_count': cachedPosts!.length},
-              })
-            );
-            _appStartTime = null; // only log once
+            final elapsedMs =
+                DateTime.now().difference(_appStartTime!).inMilliseconds;
+            unawaited(_supabase.from('fast').insert({
+              'event_type': 'first_post_from_persisted_cache',
+              'user_id': persistedId,
+              'timestamp': DateTime.now().toIso8601String(),
+              'duration_ms': elapsedMs,
+              'details': 'Posts shown before auth resolved',
+              'extra_data': {'post_count': posts!.length},
+            }));
+            _appStartTime = null;
           }
 
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             _postsBeingPreloaded.clear();
             _postsFullyPreloaded.clear();
-
-            final toPreload = cachedPosts!.length > 3
-                ? cachedPosts.sublist(0, 3)
-                : cachedPosts;
+            final toPreload = posts!.length > 3 ? posts.sublist(0, 3) : posts;
             _preloadAllMediaForPosts(toPreload);
 
             if (_forYouPosts.isNotEmpty) {
@@ -887,12 +887,11 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         if (mounted) setState(() {});
       }
     } catch (e, stack) {
-      print('❌ [Feed] _loadCachedPostsLightningFast error: $e');
       await _logFeedError(
-        operation: '_loadCachedPostsLightningFast',
+        operation: '_tryLoadCacheWithPersistedUserId',
         error: e,
         stack: stack,
-        additionalData: {'userId': currentUserId},
+        additionalData: {'userId': persistedId},
       );
       _essentialUiReady = true;
       if (mounted) setState(() {});
@@ -900,6 +899,8 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   Stream<int> _createUnreadCountStream() {
+    _unreadCountController?.close();
+    _unreadCountTimer?.cancel();
     _unreadCountController = StreamController<int>.broadcast();
     final userId = currentUserId;
     if (userId == null || userId.isEmpty) {
@@ -1217,7 +1218,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
-  // INITIAL DATA LOAD
+  // INITIAL DATA LOAD (called from didChangeDependencies after auth resolves)
   // ===========================================================================
 
   Future<void> _loadInitialData() async {
@@ -1229,71 +1230,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             userProvider.firebaseUid ?? userProvider.supabaseUid ?? '';
       }
 
-      if (!_cacheLoadAttempted) {
-        List<Map<String, dynamic>>? cachedPosts =
-            await FeedCacheService.loadImmediatelyCachedPosts(
-                currentUserId ?? '');
-        cachedPosts ??=
-            await FeedCacheService.loadCachedForYouPosts(currentUserId ?? '');
-
-        if (cachedPosts != null && cachedPosts.isNotEmpty) {
-          _cacheLoaded = true;
-          setState(() {
-            _forYouPosts = cachedPosts!;
-            _isLoading = false;
-          });
-
-          // Log first‑post from cache if not already logged
-          if (_appStartTime != null) {
-            final elapsedMs = DateTime.now().difference(_appStartTime!).inMilliseconds;
-            unawaited(
-              _supabase.from('fast').insert({
-                'event_type': 'first_post_from_cache',
-                'user_id': currentUserId,
-                'timestamp': DateTime.now().toIso8601String(),
-                'duration_ms': elapsedMs,
-                'details': 'First post displayed from cache (initial data load)',
-                'extra_data': {'post_count': cachedPosts!.length},
-              })
-            );
-            _appStartTime = null;
-          }
-
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            _postsBeingPreloaded.clear();
-            _postsFullyPreloaded.clear();
-            final toPreload = cachedPosts!.length > 3
-                ? cachedPosts.sublist(0, 3)
-                : cachedPosts;
-            _preloadAllMediaForPosts(toPreload);
-          });
-
-          if (_forYouPosts.isNotEmpty) {
-            final firstPostId = _forYouPosts.first['postId']?.toString() ?? '';
-            if (firstPostId.isNotEmpty) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (!mounted) return;
-                setState(() {
-                  _postVisibility[firstPostId] = true;
-                  _currentPlayingPostId = firstPostId;
-                  _firstVideoInitialized = false;
-                });
-                unawaited(_scheduleViewRecording(firstPostId));
-                _updateVisiblePosts(0);
-              });
-            }
-          }
-
-          unawaited(() async {
-            _nextForYouBatch = await _loadNextForYouBatch();
-            _nextBatchLoaded = true;
-          }());
-          return;
-        }
-      }
-
-      if (_essentialUiReady && _forYouPosts.isNotEmpty) {
+      // If we already loaded from the persisted cache, just kick off
+      // a fresh network fetch in the background and return.
+      if (_cacheLoaded && _forYouPosts.isNotEmpty) {
         unawaited(() async {
           _nextForYouBatch = await _loadNextForYouBatch();
           _nextBatchLoaded = true;
@@ -1398,7 +1337,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   // ===========================================================================
 
   Future<void> _loadData({bool loadMore = false}) async {
-    print('🌐 [Feed] _loadData called (loadMore=$loadMore, tab=$_selectedTab)');
     if ((_selectedTab == 1 && !_hasMoreForYou && loadMore) ||
         (_selectedTab == 0 && !_hasMoreFollowing && loadMore) ||
         _isLoadingMore) {
@@ -1410,6 +1348,12 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     try {
       List<Map<String, dynamic>> newPosts = [];
       final userId = currentUserId ?? '';
+
+      // Persist userId so next cold start can skip the auth wait.
+      if (userId.isNotEmpty) {
+        unawaited(FeedCacheService.persistLastUserId(userId));
+      }
+
       final excludedUsers = [..._blockedUsers, userId];
 
       if (_selectedTab == 0) {
@@ -1469,7 +1413,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         }());
       }
 
-      // ── Preload media ────────────────────────────────────────────────────
       if (!loadMore) {
         _postsBeingPreloaded.clear();
         _postsFullyPreloaded.clear();
@@ -1493,39 +1436,34 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           _isLoadingMore = false;
         });
 
-        // ── Write the immediate startup cache after first ForYou load ────────
+        // Write the immediate startup cache after the first ForYou network load.
         if (!loadMore &&
             _selectedTab == 1 &&
             !_immediatePostsCached &&
             userId.isNotEmpty &&
             newPosts.isNotEmpty) {
           _immediatePostsCached = true;
-          print('📝 [Feed] Writing immediate cache with ${newPosts.take(3).length} posts');
-          unawaited(
-            FeedCacheService.cacheCurrentPostsNow(
-              newPosts.take(3).toList(),
-              userId,
-            ),
-          );
+          unawaited(FeedCacheService.cacheCurrentPostsNow(
+            newPosts.take(3).toList(),
+            userId,
+          ));
         }
 
-        // ── Log first‑post from network if this is the first load and no cache was used ──
+        // Log first-post-from-network timing if cache wasn't used.
         if (!loadMore &&
             _selectedTab == 1 &&
             _appStartTime != null &&
-            newPosts.isNotEmpty &&
-            _forYouPosts.isNotEmpty) {
-          final elapsedMs = DateTime.now().difference(_appStartTime!).inMilliseconds;
-          unawaited(
-            _supabase.from('fast').insert({
-              'event_type': 'first_post_from_network',
-              'user_id': userId,
-              'timestamp': DateTime.now().toIso8601String(),
-              'duration_ms': elapsedMs,
-              'details': 'First post loaded from network (cache miss or fresh install)',
-              'extra_data': {'post_count': newPosts.length},
-            })
-          );
+            newPosts.isNotEmpty) {
+          final elapsedMs =
+              DateTime.now().difference(_appStartTime!).inMilliseconds;
+          unawaited(_supabase.from('fast').insert({
+            'event_type': 'first_post_from_network',
+            'user_id': userId,
+            'timestamp': DateTime.now().toIso8601String(),
+            'duration_ms': elapsedMs,
+            'details': 'First post loaded from network (no cache)',
+            'extra_data': {'post_count': newPosts.length},
+          }));
           _appStartTime = null;
         }
 
@@ -1712,11 +1650,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     return false;
   }
 
-  Widget _buildMinimalSkeleton(_ColorSet colors) {
-    final isDark = colors.backgroundColor == const Color(0xFF121212);
-    return FeedSkeleton(isDark: isDark);
-  }
-
   void _navigateToMessages() {
     VideoManager.pauseAllVideos();
     _currentPlayingPostId = null;
@@ -1746,7 +1679,10 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     final colors = _getColors(themeProvider);
     final width = MediaQuery.of(context).size.width;
 
-    if (!_essentialUiReady) return _buildMinimalSkeleton(colors);
+    if (!_essentialUiReady) {
+      final isDark = colors.backgroundColor == const Color(0xFF121212);
+      return FeedSkeleton(isDark: isDark);
+    }
 
     return Scaffold(
       backgroundColor: colors.backgroundColor,
@@ -1888,7 +1824,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildFollowingFeed(_ColorSet colors) {
-    if (_isLoading && _followingPosts.isEmpty) return _buildLoadingFeed(colors);
+    if (_isLoading && _followingPosts.isEmpty) {
+      return _buildLoadingFeed(colors);
+    }
     if (!_isLoading && _followingIds.isEmpty) {
       return _buildNoFollowingMessage(colors);
     }
@@ -1954,7 +1892,9 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         onPageChanged: (page) => _onPageChanged(page, isForYou),
         itemBuilder: (ctx, index) {
           if (index >= posts.length) {
-            return _buildLoadingIndicator(colors);
+            return Center(
+              child: CircularProgressIndicator(color: colors.textColor),
+            );
           }
           final post = posts[index];
           final postId = post['postId']?.toString() ?? '';
@@ -1978,12 +1918,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           );
         },
       ),
-    );
-  }
-
-  Widget _buildLoadingIndicator(_ColorSet colors) {
-    return Center(
-      child: CircularProgressIndicator(color: colors.textColor),
     );
   }
 
