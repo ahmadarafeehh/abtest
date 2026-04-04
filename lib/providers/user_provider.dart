@@ -194,16 +194,6 @@ class UserProvider with ChangeNotifier {
           return;
         }
 
-        // =====================================================================
-        // DEV MODE GUARD: If there's no auth session but we already have a
-        // manually loaded user (e.g. dev bypass), do NOT wipe them.
-        // Remove this block before releasing to production.
-        if (_user != null) {
-          // DEV MODE: skip clear
-          return;
-        }
-        // =====================================================================
-
         _clearUserState();
         return;
       }
