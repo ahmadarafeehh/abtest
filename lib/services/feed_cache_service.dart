@@ -131,8 +131,6 @@ class FeedCacheService {
         }),
       );
       unawaited(_downloadAndCacheMedia(toCache));
-      // Non-blocking log — Supabase connection state doesn't matter here
-      // because this runs well after the app is already showing content.
       unawaited(_log(
         eventType: 'immediate_cache_write',
         userId: userId,
@@ -149,12 +147,6 @@ class FeedCacheService {
     }
   }
 
-  /// Reads cached posts from SharedPreferences synchronously-fast.
-  ///
-  /// CRITICAL: every _log() call here is fire-and-forget (no await).
-  /// Previously each await _log() blocked on a Supabase HTTP call during
-  /// cold restart (TLS handshake + token refresh = up to 5 seconds),
-  /// stalling the return of posts that were already sitting in memory.
   static Future<List<Map<String, dynamic>>?> loadImmediatelyCachedPosts(
     String userId, {
     bool skipUserIdCheck = false,
@@ -165,7 +157,6 @@ class FeedCacheService {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_immediatePostsCacheKey);
       if (raw == null) {
-        // Fire-and-forget — do NOT await, Supabase may not be ready yet.
         _log(
           eventType: 'immediate_cache_miss',
           userId: userId,
@@ -241,8 +232,6 @@ class FeedCacheService {
     try {
       final info = await _VideoCacheManager.instance.getFileFromCache(videoUrl);
       if (info != null && info.file.existsSync()) {
-        // Fire-and-forget — this is called during preload, Supabase may not
-        // be connected yet on a cold restart.
         _log(
           eventType: 'video_cache_hit',
           durationMs: DateTime.now().difference(start).inMilliseconds,
@@ -277,7 +266,6 @@ class FeedCacheService {
     try {
       final info = await _ImageCacheManager.instance.getFileFromCache(imageUrl);
       if (info != null && info.file.existsSync()) {
-        // Fire-and-forget — same reason as getCachedVideoFile above.
         _log(
           eventType: 'image_cache_hit',
           durationMs: DateTime.now().difference(start).inMilliseconds,
@@ -321,7 +309,8 @@ class FeedCacheService {
       final prefs = await SharedPreferences.getInstance();
       if (!forceUpdate) {
         final last = prefs.getInt(_lastCacheUpdateAttemptKey) ?? 0;
-        if (DateTime.now().millisecondsSinceEpoch - last 
+        // FIXED: added missing '<' operator
+        if (DateTime.now().millisecondsSinceEpoch - last <
             const Duration(minutes: 1).inMilliseconds) return;
       }
 
