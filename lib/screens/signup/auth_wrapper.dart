@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,22 +16,11 @@ import 'package:Ratedly/resources/auth_methods.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
-import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 
-// Helper to log auth timing to 'fast' table – now returns Future<void>
-Future<void> _logAuthEvent(String eventType, int durationMs,
-    {String? userId, String? details}) async {
-  try {
-    await Supabase.instance.client.from('fast').insert({
-      'event_type': eventType,
-      'user_id': userId,
-      'timestamp': DateTime.now().toIso8601String(),
-      'duration_ms': durationMs,
-      'details': details,
-    });
-  } catch (_) {}
-}
-
+// ─────────────────────────────────────────────
+// Only logs to Supabase when something is genuinely broken.
+// Onboarding abandonment is tracked locally/in-memory only.
+// ─────────────────────────────────────────────
 Future<void> _logError({
   required String eventType,
   String? firebaseUid,
@@ -53,6 +43,27 @@ Future<void> _logError({
   } catch (_) {}
 }
 
+// Local-only onboarding funnel tracker (never hits Supabase unless there's an error)
+class _OnboardingTracker {
+  final String userId;
+  final DateTime sessionStart = DateTime.now();
+  String currentStep = 'init';
+  DateTime stepStartTime = DateTime.now();
+
+  _OnboardingTracker(this.userId);
+
+  void step(String stepName) {
+    final elapsed = DateTime.now().difference(stepStartTime).inSeconds;
+    DebugLogger.logEvent(
+        'ONBOARDING_STEP [$userId] $currentStep → $stepName (${elapsed}s on previous step)');
+    currentStep = stepName;
+    stepStartTime = DateTime.now();
+  }
+
+  int get totalElapsedSeconds =>
+      DateTime.now().difference(sessionStart).inSeconds;
+}
+
 class AuthWrapper extends StatefulWidget {
   const AuthWrapper({Key? key}) : super(key: key);
 
@@ -60,7 +71,7 @@ class AuthWrapper extends StatefulWidget {
   State<AuthWrapper> createState() => _AuthWrapperState();
 }
 
-class _AuthWrapperState extends State<AuthWrapper> {
+class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   final firebase_auth.FirebaseAuth _auth = firebase_auth.FirebaseAuth.instance;
   final CountryService _countryService = CountryService();
   final AuthMethods _authMethods = AuthMethods();
@@ -70,7 +81,9 @@ class _AuthWrapperState extends State<AuthWrapper> {
   bool _usingCachedData = false;
   bool _needsMigration = false;
   bool _checkingMigration = false;
-  bool _isInitializing = false;
+
+  // FIX: replaced _isInitializing bool with a proper lock
+  bool _initLock = false;
 
   String? _firebaseUid;
   String? _supabaseUid;
@@ -78,11 +91,11 @@ class _AuthWrapperState extends State<AuthWrapper> {
   String? _userName;
   String? _photoUrl;
   bool _isMigrated = false;
+
+  // FIX: onboarding can only move forward — never backwards
   bool _onboardingComplete = false;
 
-  // Timing variables
-  int _authStartTime = 0;
-  bool _authTimingRecorded = false;
+  _OnboardingTracker? _tracker;
 
   static SharedPreferences? _prefs;
   static Future<SharedPreferences> get prefsInstance async {
@@ -95,23 +108,34 @@ class _AuthWrapperState extends State<AuthWrapper> {
   @override
   void initState() {
     super.initState();
-    _authStartTime = DateTime.now().millisecondsSinceEpoch;
+    WidgetsBinding.instance.addObserver(this);
     _initializeAuth();
 
     _authSubscription = _supabase.auth.onAuthStateChange.listen((data) async {
-      if (data.event == AuthChangeEvent.signedIn ||
-          data.event == AuthChangeEvent.tokenRefreshed) {
-        if (!_isInitializing) {
-          _isInitializing = true;
-          _initializeAuth().whenComplete(() {
-            _isInitializing = false;
-          });
+      // FIX: removed tokenRefreshed — it is NOT a new login and was causing
+      // re-initialization races that wiped onboardingComplete state
+      if (data.event == AuthChangeEvent.signedIn) {
+        DebugLogger.logEvent('AUTH_EVENT: signedIn — triggering init');
+        if (!_initLock) {
+          _initLock = true;
+          await _initializeAuth();
+          _initLock = false;
+        } else {
+          DebugLogger.logEvent(
+              'AUTH_EVENT: signedIn ignored — init already running');
         }
+      } else if (data.event == AuthChangeEvent.tokenRefreshed) {
+        // Intentionally ignored. Token refreshes happen silently in the
+        // background and do not represent a meaningful auth state change.
+        DebugLogger.logEvent(
+            'AUTH_EVENT: tokenRefreshed — intentionally ignored');
       } else if (data.event == AuthChangeEvent.signedOut && mounted) {
+        DebugLogger.logEvent('AUTH_EVENT: signedOut — clearing state');
         setState(() {
           _firebaseUid = null;
           _supabaseUid = null;
           _isLoading = false;
+          _onboardingComplete = false;
         });
       }
     });
@@ -119,17 +143,23 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _authSubscription.cancel();
     super.dispose();
   }
 
-  Future<void> _recordAuthCompletion() async {
-    if (_authTimingRecorded) return;
-    _authTimingRecorded = true;
-    final elapsed = DateTime.now().millisecondsSinceEpoch - _authStartTime;
-    await _logAuthEvent('auth_resolution_complete', elapsed,
-        userId: _firebaseUid ?? _supabaseUid,
-        details: 'User authenticated and onboarding status resolved');
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Track if user backgrounds the app during onboarding (possible abandon signal)
+    if (state == AppLifecycleState.paused &&
+        (_firebaseUid != null || _supabaseUid != null) &&
+        !_onboardingComplete) {
+      final userId = _firebaseUid ?? _supabaseUid ?? 'unknown';
+      final step = _tracker?.currentStep ?? 'unknown';
+      final elapsed = _tracker?.totalElapsedSeconds ?? 0;
+      DebugLogger.logEvent(
+          'ONBOARDING_APP_BACKGROUNDED [$userId] at step=$step after ${elapsed}s — possible abandon (not logged to DB)');
+    }
   }
 
   Future<void> _initializeAuth() async {
@@ -138,20 +168,22 @@ class _AuthWrapperState extends State<AuthWrapper> {
     final supabaseSession = _supabase.auth.currentSession;
     final firebaseUser = _auth.currentUser;
 
+    DebugLogger.logEvent(
+        'INIT_AUTH: hasSupabase=${supabaseSession != null} hasFirebase=${firebaseUser != null}');
+
     if (supabaseSession != null) {
       await _handleSupabaseSession(supabaseSession, userProvider);
-      await _recordAuthCompletion();
       return;
     }
 
     if (firebaseUser != null) {
       await _handleFirebaseUser(firebaseUser, userProvider);
-      await _recordAuthCompletion();
       return;
     }
 
+    DebugLogger.logEvent(
+        'INIT_AUTH: no session found — showing GetStartedPage');
     if (mounted) setState(() => _isLoading = false);
-    await _recordAuthCompletion();
   }
 
   Future<void> _handleSupabaseSession(
@@ -173,6 +205,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
         if (userData != null) {
           found = true;
           recordSource = 'firebase_uid';
+          DebugLogger.logEvent(
+              'SUPABASE_SESSION: record found via firebase_uid=${firebaseUser.uid}');
 
           await _supabase.from('users').update({
             'supabase_uid': session.user.id,
@@ -206,6 +240,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
           found = true;
           recordSource = 'email_migration';
           userData = userByEmail;
+          DebugLogger.logEvent(
+              'SUPABASE_SESSION: record found via email migration email=${session.user.email}');
 
           await _supabase.from('users').update({
             'supabase_uid': session.user.id,
@@ -236,8 +272,21 @@ class _AuthWrapperState extends State<AuthWrapper> {
         if (records.isNotEmpty) {
           found = true;
           recordSource = 'supabase_uid';
+          DebugLogger.logEvent(
+              'SUPABASE_SESSION: ${records.length} record(s) found via supabase_uid=${session.user.id}');
 
           if (records.length > 1) {
+            // Log duplicate as a real error — this shouldn't happen
+            await _logError(
+              eventType: 'DUPLICATE_USER_RECORDS',
+              supabaseUid: session.user.id,
+              errorDetails:
+                  'Found ${records.length} records for supabase_uid — deduplicating',
+              additionalData: {
+                'record_uids': records.map((r) => r['uid']).toList()
+              },
+            );
+
             Map<String, dynamic>? bestRecord;
             List<Map<String, dynamic>> others = [];
             for (var rec in records) {
@@ -267,6 +316,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
       // --- STEP 4: No record found — create new user ---
       if (!found) {
         recordSource = 'none_created_new';
+        DebugLogger.logEvent(
+            'SUPABASE_SESSION: no record found — creating new user for supabase_uid=${session.user.id}');
 
         final newUser = {
           'uid': session.user.id,
@@ -284,12 +335,12 @@ class _AuthWrapperState extends State<AuthWrapper> {
           'country': null,
           'migrated': true,
           'supabase_uid': session.user.id,
+          'test': Random().nextBool(), // ← randomly assign A/B test group
         };
         await _supabase.from('users').upsert(newUser, onConflict: 'uid');
         userData = newUser;
       }
 
-      // Populate state from the resolved record
       _supabaseUid = session.user.id;
       _firebaseUid = userData!['uid'] as String?;
       _userEmail = userData['email'] as String? ?? session.user.email;
@@ -297,7 +348,10 @@ class _AuthWrapperState extends State<AuthWrapper> {
       _photoUrl = userData['photoUrl'] as String?;
       _isMigrated = userData['migrated'] == true;
 
-      // Initialize UserProvider
+      // Start onboarding tracker for this user
+      _tracker = _OnboardingTracker(_firebaseUid ?? _supabaseUid ?? 'unknown');
+      _tracker!.step('provider_init');
+
       try {
         userProvider.initializeUser({
           'uid': _firebaseUid,
@@ -306,6 +360,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
           ...userData,
         });
       } catch (e, stack) {
+        // Provider init failure IS an error — log it
         await _logError(
           eventType: 'USER_PROVIDER_INIT_ERROR',
           firebaseUid: _firebaseUid,
@@ -317,20 +372,35 @@ class _AuthWrapperState extends State<AuthWrapper> {
         rethrow;
       }
 
+      _tracker!.step('onboarding_check');
       final hasCompletedOnboarding =
           await _checkOnboardingStatus(_firebaseUid!);
-      _onboardingComplete = hasCompletedOnboarding;
 
+      // FIX: onboarding state is a one-way ratchet — never go false→true→false
       if (mounted) {
         setState(() {
-          _onboardingComplete = hasCompletedOnboarding;
+          if (!_onboardingComplete) {
+            _onboardingComplete = hasCompletedOnboarding;
+          }
           _isLoading = false;
         });
       }
 
+      if (!hasCompletedOnboarding) {
+        _tracker!.step('onboarding_screen_shown');
+        DebugLogger.logEvent(
+            'ONBOARDING: user ${_firebaseUid} sent to onboarding (recordSource=$recordSource)');
+      } else {
+        _tracker!.step('home_screen');
+        DebugLogger.logEvent(
+            'ONBOARDING: user ${_firebaseUid} onboarding complete — going home');
+      }
+
+      // Cache for both Firebase and Supabase users
       _updateAuthCache(hasCompletedOnboarding);
       _runCountryChecks(_firebaseUid!);
     } catch (e, stack) {
+      // Session handling failure IS an error — log it
       await _logError(
         eventType: 'ERROR_SUPABASE_SESSION_HANDLING',
         firebaseUid: firebaseUser?.uid,
@@ -352,9 +422,14 @@ class _AuthWrapperState extends State<AuthWrapper> {
     _photoUrl = firebaseUser.photoURL;
     _isMigrated = false;
 
+    _tracker = _OnboardingTracker(_firebaseUid!);
+    _tracker!.step('cache_check');
+
     final cachedData = await _loadCachedAuthDataInstantly();
 
     if (cachedData != null && mounted) {
+      DebugLogger.logEvent(
+          'FIREBASE_USER: using cached onboarding state for ${_firebaseUid}');
       setState(() {
         _onboardingComplete = cachedData['onboardingComplete'] ?? false;
         _usingCachedData = true;
@@ -364,6 +439,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
       await _initializeUserProvider(userProvider);
       _verifyOnboardingInBackground();
     } else {
+      DebugLogger.logEvent(
+          'FIREBASE_USER: no cache — fetching from DB for ${_firebaseUid}');
       if (mounted) setState(() => _isLoading = false);
       await _checkOnboardingFromDatabase(userProvider);
     }
@@ -382,8 +459,18 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
       if (userData != null) {
         userProvider.initializeUser(userData as Map<String, dynamic>);
+      } else {
+        DebugLogger.logEvent(
+            'INIT_USER_PROVIDER: no record found for uid=$_firebaseUid (may be new user)');
       }
-    } catch (e) {
+    } catch (e, stack) {
+      // DB failure fetching user IS an error
+      await _logError(
+        eventType: 'INIT_USER_PROVIDER_ERROR',
+        firebaseUid: _firebaseUid,
+        errorDetails: e.toString(),
+        stackTrace: stack.toString(),
+      );
       DebugLogger.logError('INIT_USER_PROVIDER', e);
     }
   }
@@ -397,12 +484,21 @@ class _AuthWrapperState extends State<AuthWrapper> {
         final data = jsonDecode(cachedData);
         final lastUpdated = data['lastUpdated'] ?? 0;
         final cacheAge = DateTime.now().millisecondsSinceEpoch - lastUpdated;
+        final cacheAgeHours = (cacheAge / 3600000).toStringAsFixed(1);
         if (cacheAge < 24 * 60 * 60 * 1000) {
+          DebugLogger.logEvent(
+              'AUTH_CACHE: hit for $_firebaseUid (age=${cacheAgeHours}h)');
           return {
             'onboardingComplete': data['onboardingComplete'] ?? false,
             'lastUpdated': lastUpdated,
           };
+        } else {
+          DebugLogger.logEvent(
+              'AUTH_CACHE: expired for $_firebaseUid (age=${cacheAgeHours}h) — fetching fresh');
         }
+      } else {
+        DebugLogger.logEvent(
+            'AUTH_CACHE: miss for $_firebaseUid — no cache found');
       }
     } catch (e) {
       DebugLogger.logError('LOAD_CACHED_AUTH', e);
@@ -415,11 +511,30 @@ class _AuthWrapperState extends State<AuthWrapper> {
     try {
       final hasCompletedOnboarding =
           await _checkOnboardingStatus(_firebaseUid!);
-      if (hasCompletedOnboarding != _onboardingComplete && mounted) {
-        setState(() => _onboardingComplete = hasCompletedOnboarding);
-        _updateAuthCache(hasCompletedOnboarding);
+
+      if (hasCompletedOnboarding != _onboardingComplete) {
+        DebugLogger.logEvent(
+            'ONBOARDING_BG_VERIFY: cache mismatch for $_firebaseUid — cache=$_onboardingComplete DB=$hasCompletedOnboarding');
+        if (mounted) {
+          setState(() {
+            // FIX: one-way ratchet — only allow false → true, never true → false
+            if (!_onboardingComplete && hasCompletedOnboarding) {
+              _onboardingComplete = true;
+            }
+          });
+          _updateAuthCache(_onboardingComplete);
+        }
+      } else {
+        DebugLogger.logEvent(
+            'ONBOARDING_BG_VERIFY: cache matches DB for $_firebaseUid — onboardingComplete=$hasCompletedOnboarding');
       }
-    } catch (e) {
+    } catch (e, stack) {
+      await _logError(
+        eventType: 'BG_ONBOARDING_VERIFY_ERROR',
+        firebaseUid: _firebaseUid,
+        errorDetails: e.toString(),
+        stackTrace: stack.toString(),
+      );
       DebugLogger.logError('VERIFY_ONBOARDING_BG', e);
     }
   }
@@ -432,16 +547,29 @@ class _AuthWrapperState extends State<AuthWrapper> {
           .eq('uid', uid)
           .maybeSingle();
 
-      if (response == null) return false;
+      if (response == null) {
+        DebugLogger.logEvent('CHECK_ONBOARDING: no record for uid=$uid');
+        return false;
+      }
 
       final data = response as Map<String, dynamic>;
-      return data['onboardingComplete'] == true ||
+      final complete = data['onboardingComplete'] == true ||
           (data['dateOfBirth'] != null &&
               data['username'] != null &&
               data['username'].toString().isNotEmpty &&
               data['gender'] != null &&
               data['gender'].toString().isNotEmpty);
-    } catch (e) {
+
+      DebugLogger.logEvent('CHECK_ONBOARDING: uid=$uid complete=$complete '
+          'username=${data['username']} dob=${data['dateOfBirth']} gender=${data['gender']}');
+      return complete;
+    } catch (e, stack) {
+      await _logError(
+        eventType: 'CHECK_ONBOARDING_STATUS_ERROR',
+        firebaseUid: uid,
+        errorDetails: e.toString(),
+        stackTrace: stack.toString(),
+      );
       DebugLogger.logError('CHECK_ONBOARDING_STATUS', e);
       return false;
     }
@@ -450,12 +578,25 @@ class _AuthWrapperState extends State<AuthWrapper> {
   Future<void> _checkOnboardingFromDatabase(UserProvider userProvider) async {
     if (_firebaseUid == null) return;
     try {
+      _tracker?.step('db_fetch');
       await _initializeUserProvider(userProvider);
       final hasCompletedOnboarding =
           await _checkOnboardingStatus(_firebaseUid!);
-      if (mounted) setState(() => _onboardingComplete = hasCompletedOnboarding);
+      if (mounted) {
+        setState(() {
+          if (!_onboardingComplete) {
+            _onboardingComplete = hasCompletedOnboarding;
+          }
+        });
+      }
       _updateAuthCache(hasCompletedOnboarding);
-    } catch (e) {
+    } catch (e, stack) {
+      await _logError(
+        eventType: 'CHECK_ONBOARDING_DB_ERROR',
+        firebaseUid: _firebaseUid,
+        errorDetails: e.toString(),
+        stackTrace: stack.toString(),
+      );
       DebugLogger.logError('CHECK_ONBOARDING_DB', e);
     }
   }
@@ -466,16 +607,24 @@ class _AuthWrapperState extends State<AuthWrapper> {
     try {
       final migrationStatus =
           await _authMethods.getCurrentUserMigrationStatus();
+      final needsMigration = migrationStatus['needs_migration'] == true;
+      DebugLogger.logEvent(
+          'MIGRATION_CHECK: uid=$_firebaseUid needsMigration=$needsMigration reason=${migrationStatus['reason']}');
+
       if (mounted) {
-        setState(() {
-          _needsMigration = migrationStatus['needs_migration'] == true;
-        });
+        setState(() => _needsMigration = needsMigration);
         if (_needsMigration) {
           await Future.delayed(const Duration(milliseconds: 500));
           if (mounted) _showMigrationScreen();
         }
       }
-    } catch (e) {
+    } catch (e, stack) {
+      await _logError(
+        eventType: 'MIGRATION_CHECK_ERROR',
+        firebaseUid: _firebaseUid,
+        errorDetails: e.toString(),
+        stackTrace: stack.toString(),
+      );
       DebugLogger.logError('CHECK_MIGRATION', e);
     } finally {
       _checkingMigration = false;
@@ -503,6 +652,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
           'userId': _firebaseUid,
         }),
       );
+      DebugLogger.logEvent(
+          'AUTH_CACHE: updated for $_firebaseUid onboardingComplete=$onboardingComplete');
     } catch (e) {
       DebugLogger.logError('UPDATE_AUTH_CACHE', e);
     }
@@ -510,6 +661,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
   void _showMigrationScreen() {
     if (_firebaseUid == null) return;
+    DebugLogger.logEvent(
+        'MIGRATION: redirecting uid=$_firebaseUid to migration screen');
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (context) => LoginScreen(
@@ -521,24 +674,16 @@ class _AuthWrapperState extends State<AuthWrapper> {
   }
 
   void _handleOnboardingComplete() {
+    final elapsed = _tracker?.totalElapsedSeconds ?? 0;
+    DebugLogger.logEvent(
+        'ONBOARDING_COMPLETE: uid=${_firebaseUid ?? _supabaseUid} totalTime=${elapsed}s');
+    _tracker?.step('completed');
     if (mounted) setState(() => _onboardingComplete = true);
     _updateAuthCache(true);
   }
 
   @override
   Widget build(BuildContext context) {
-    // =========================================================
-    // DEV MODE: Set to true to skip auth and go straight to app
-    // Set back to false before releasing to production
-    const bool devModeBypassAuth = true;
-    if (devModeBypassAuth) {
-      return _DevModeLoader();
-    }
-    // =========================================================
-
-    // The code below is only reachable when devModeBypassAuth == false.
-    // We add an ignore comment to silence the dead code warning during development.
-    // ignore: dead_code
     if (_isLoading) return _buildSimpleLoadingScreen();
 
     final bool hasUser = _firebaseUid != null || _supabaseUid != null;
@@ -550,8 +695,20 @@ class _AuthWrapperState extends State<AuthWrapper> {
     if (hasUser) {
       return OnboardingFlow(
         onComplete: _handleOnboardingComplete,
-        onError: (error) =>
-            DebugLogger.logError('ONBOARDING_FLOW_ERROR', error),
+        onError: (error) async {
+          // Onboarding flow crash IS an error
+          await _logError(
+            eventType: 'ONBOARDING_FLOW_CRASH',
+            firebaseUid: _firebaseUid,
+            supabaseUid: _supabaseUid,
+            errorDetails: error.toString(),
+            additionalData: {
+              'step': _tracker?.currentStep,
+              'elapsed_seconds': _tracker?.totalElapsedSeconds,
+            },
+          );
+          DebugLogger.logError('ONBOARDING_FLOW_ERROR', error);
+        },
       );
     }
 
@@ -559,67 +716,20 @@ class _AuthWrapperState extends State<AuthWrapper> {
   }
 
   Widget _buildSimpleLoadingScreen() {
-    return const FeedSkeleton(isDark: true);
-  }
-}
-
-// =============================================================================
-// DEV MODE LOADER — loads a real user from Supabase so feed/screens work
-// Replace DEV_USER_UID below with any real uid from your users table
-// =============================================================================
-class _DevModeLoader extends StatefulWidget {
-  @override
-  State<_DevModeLoader> createState() => _DevModeLoaderState();
-}
-
-class _DevModeLoaderState extends State<_DevModeLoader> {
-  // ⬇️ PUT YOUR REAL USER UID HERE (copy any uid from your Supabase users table)
-  static const String _devUserId = '4100c49e-6a7e-45d8-a2d2-45e70a01dba3';
-
-  bool _loaded = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadDevUser();
-  }
-
-  Future<void> _loadDevUser() async {
-    try {
-      final supabase = Supabase.instance.client;
-      final data = await supabase
-          .from('users')
-          .select()
-          .eq('uid', _devUserId)
-          .maybeSingle();
-
-      if (data != null && mounted) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          final userProvider =
-              Provider.of<UserProvider>(context, listen: false);
-          userProvider.initializeUser(Map<String, dynamic>.from(data));
-          print('[DEV] Loaded dev user: ${data['username']} (${data['uid']})');
-          print('[DEV] userProvider.firebaseUid = ${userProvider.firebaseUid}');
-          print('[DEV] userProvider.supabaseUid = ${userProvider.supabaseUid}');
-          print('[DEV] userProvider.user?.uid = ${userProvider.user?.uid}');
-          if (mounted) setState(() => _loaded = true);
-        });
-      } else {
-        print('[DEV] WARNING: No user found for uid=$_devUserId');
-        if (mounted) setState(() => _loaded = true);
-      }
-    } catch (e) {
-      print('[DEV] Error loading dev user: $e');
-      if (mounted) setState(() => _loaded = true);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!_loaded) {
-      return const FeedSkeleton(isDark: true);
-    }
-    return const ResponsiveLayout(mobileScreenLayout: MobileScreenLayout());
+    return Scaffold(
+      backgroundColor: const Color(0xFF121212),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Image.asset('assets/logo/22.png', width: 100, height: 100),
+            const SizedBox(height: 20),
+            const CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
