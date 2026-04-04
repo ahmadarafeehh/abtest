@@ -17,11 +17,7 @@ class _ResponsiveLayoutState extends State<ResponsiveLayout> {
   @override
   void initState() {
     super.initState();
-    // Defer until after the first frame to avoid
-    // "setState called during build" from UserProvider.refreshUser
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      addData();
-    });
+    addData();
   }
 
   addData() async {
