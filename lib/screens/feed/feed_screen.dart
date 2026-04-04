@@ -65,30 +65,6 @@ class _LightColors extends _ColorSet {
         );
 }
 
-// =============================================================================
-// ERROR LOGGING HELPER
-// =============================================================================
-Future<void> _logFeedError({
-  required String operation,
-  required dynamic error,
-  StackTrace? stack,
-  Map<String, dynamic>? additionalData,
-}) async {
-  try {
-    await Supabase.instance.client.from('login_logs').insert({
-      'event_type': 'FEED_ERROR',
-      'firebase_uid': FirebaseAuth.instance.currentUser?.uid,
-      'supabase_uid': Supabase.instance.client.auth.currentSession?.user.id,
-      'error_details': error.toString(),
-      'stack_trace': stack?.toString(),
-      'additional_data': {
-        'operation': operation,
-        if (additionalData != null) ...additionalData,
-      },
-    });
-  } catch (_) {}
-}
-
 class FeedScreen extends StatefulWidget {
   const FeedScreen({Key? key}) : super(key: key);
 
@@ -328,12 +304,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           checkCompletion();
         }
       } catch (e, stack) {
-        await _logFeedError(
-          operation: '_preloadAllMediaForPost/video',
-          error: e,
-          stack: stack,
-          additionalData: {'postId': postId, 'postUrl': postUrl},
-        );
         checkCompletion();
       }
     }
@@ -345,12 +315,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _preloadImage(imageUrl, postId).then((_) {
           checkCompletion();
         }).catchError((e, stack) async {
-          await _logFeedError(
-            operation: '_preloadAllMediaForPost/image',
-            error: e,
-            stack: stack,
-            additionalData: {'postId': postId, 'imageUrl': imageUrl},
-          );
           checkCompletion();
         });
       }
@@ -391,12 +355,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       }
       _checkAndMarkPostReady(postId);
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_preloadImage',
-        error: e,
-        stack: stack,
-        additionalData: {'imageUrl': imageUrl, 'postId': postId},
-      );
       _imagePreloaded[imageUrl] = false;
       _checkAndMarkPostReady(postId);
     }
@@ -417,12 +375,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         throw Exception('Firebase SDK returned null or empty bytes');
       }
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_preloadFirebaseImageWithSDK',
-        error: e,
-        stack: stack,
-        additionalData: {'imageUrl': imageUrl, 'postId': postId},
-      );
       await _preloadFirebaseImageAlternative(imageUrl, postId);
     }
   }
@@ -584,12 +536,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _checkAndMarkPostReady(postId);
       completer.complete();
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_initializeFeedVideoController',
-        error: e,
-        stack: stack,
-        additionalData: {'videoUrl': videoUrl, 'postId': postId},
-      );
       try {
         _feedVideoControllers.remove(videoUrl)?.dispose();
       } catch (_) {}
@@ -742,12 +688,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _postViewCount = 0;
       }
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_recordPendingViews',
-        error: e,
-        stack: stack,
-        additionalData: {'views': viewsToRecord.length},
-      );
+      // Ignore error
     } finally {
       _viewRecordingScheduled = false;
     }
@@ -896,16 +837,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           });
 
           if (_appStartTime != null) {
-            final elapsedMs =
-                DateTime.now().difference(_appStartTime!).inMilliseconds;
-            unawaited(_supabase.from('fast').insert({
-              'event_type': 'first_post_from_persisted_cache',
-              'user_id': persistedId,
-              'timestamp': DateTime.now().toIso8601String(),
-              'duration_ms': elapsedMs,
-              'details': 'Posts shown before auth resolved',
-              'extra_data': {'post_count': posts!.length},
-            }));
+            // Timing log removed
             _appStartTime = null;
           }
 
@@ -933,12 +865,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         if (mounted) setState(() {});
       }
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_tryLoadCacheWithPersistedUserId',
-        error: e,
-        stack: stack,
-        additionalData: {'userId': persistedId},
-      );
       _essentialUiReady = true;
       if (mounted) setState(() {});
     }
@@ -967,12 +893,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           _unreadCountController!.add(count);
         }
       } catch (e, stack) {
-        await _logFeedError(
-          operation: '_unreadCountTimer',
-          error: e,
-          stack: stack,
-          additionalData: {'userId': userId},
-        );
         if (!(_unreadCountController?.isClosed ?? true)) {
           _unreadCountController!.add(0);
         }
@@ -991,12 +911,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           _unreadCountController!.add(count);
         }
       } catch (e, stack) {
-        await _logFeedError(
-          operation: '_createUnreadCountStream_initial',
-          error: e,
-          stack: stack,
-          additionalData: {'userId': userId},
-        );
         if (!(_unreadCountController?.isClosed ?? true)) {
           _unreadCountController!.add(0);
         }
@@ -1023,12 +937,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _userCache[m['uid']] = m;
       }
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_bulkFetchUsers',
-        error: e,
-        stack: stack,
-        additionalData: {'userCount': userIds.length},
-      );
+      // Ignore error
     }
   }
 
@@ -1224,12 +1133,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       _blockedUsersCache[userId] = _blockedUsers;
       _lastBlockedUsersCacheTime = now;
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_loadBlockedUsers',
-        error: e,
-        stack: stack,
-        additionalData: {'userId': userId},
-      );
       _blockedUsers = [];
     }
   }
@@ -1253,12 +1156,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         _followingIds = [];
       }
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_loadFollowingIds',
-        error: e,
-        stack: stack,
-        additionalData: {'userId': userId},
-      );
       _followingIds = [];
     }
   }
@@ -1305,12 +1202,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       }
       await _loadData();
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_loadInitialData',
-        error: e,
-        stack: stack,
-        additionalData: {'userId': currentUserId},
-      );
       if (mounted) setState(() => _isLoading = false);
     } finally {
       if (mounted) {
@@ -1349,12 +1240,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         }).toList();
       }
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_loadNextForYouBatch',
-        error: e,
-        stack: stack,
-        additionalData: {'userId': userId},
-      );
+      // Ignore error
     }
     return [];
   }
@@ -1548,21 +1434,11 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               FeedCacheService.cacheCurrentPostsNow(toImmediateCache, userId));
         }
 
-        // Log first-post-from-network timing if cache wasn't used.
+        // Log first-post-from-network timing removed
         if (!loadMore &&
             _selectedTab == 1 &&
             _appStartTime != null &&
             newPosts.isNotEmpty) {
-          final elapsedMs =
-              DateTime.now().difference(_appStartTime!).inMilliseconds;
-          unawaited(_supabase.from('fast').insert({
-            'event_type': 'first_post_from_network',
-            'user_id': userId,
-            'timestamp': DateTime.now().toIso8601String(),
-            'duration_ms': elapsedMs,
-            'details': 'First post loaded from network (no cache)',
-            'extra_data': {'post_count': newPosts.length},
-          }));
           _appStartTime = null;
         }
 
@@ -1607,16 +1483,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         });
       }
     } catch (e, stack) {
-      await _logFeedError(
-        operation: '_loadData',
-        error: e,
-        stack: stack,
-        additionalData: {
-          'selectedTab': _selectedTab,
-          'loadMore': loadMore,
-          'userId': currentUserId,
-        },
-      );
       if (mounted) {
         setState(() {
           _isLoadingMore = false;
