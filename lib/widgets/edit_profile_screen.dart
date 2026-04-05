@@ -14,7 +14,7 @@ import 'package:video_player/video_player.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/media_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
-import 'package:Ratedly/screens/Profile_page/custom_camera_screen.dart'; // added
+import 'package:Ratedly/screens/Profile_page/custom_camera_screen.dart';
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 // =============================================================================
@@ -153,6 +153,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         u.contains('video=true');
   }
 
+  /// True when the user has real media set — either a pending pick that hasn't
+  /// been saved yet, or a previously saved photo/video URL.
+  bool get _hasMedia {
+    if (_pendingImageBytes != null) return true;
+    if (_pendingVideoFile != null) return true;
+    return _currentPhotoUrl != null && _currentPhotoUrl != 'default';
+  }
+
   Widget _buildDefaultAvatar(_EditProfileColorSet colors) => Center(
         child: Icon(Icons.account_circle, size: 96, color: colors.iconColor),
       );
@@ -258,14 +266,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   // ==========================================================================
 
   Future<void> _openCamera() async {
-    // Show warning if not agreed yet
     if (!_hasAgreedToWarning) {
       final agreed = await _showWarningDialog();
       if (agreed != true) return;
       await _saveUserAgreement();
     }
 
-    // Push the custom camera screen with profile callbacks
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -331,9 +337,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   // ==========================================================================
-  // REMOVE MEDIA (triggered by the edit badge)
+  // REMOVE MEDIA
   // ==========================================================================
 
+  /// Only called from the edit badge when [_hasMedia] is true.
   void _showRemoveOptions() {
     final colors =
         _getColors(Provider.of<ThemeProvider>(context, listen: false));
@@ -411,7 +418,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final colors =
         _getColors(Provider.of<ThemeProvider>(context, listen: false));
 
-    // Progress dialog
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -550,7 +556,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   // ==========================================================================
-  // PROFILE IMAGE PREVIEW (unchanged)
+  // PROFILE IMAGE PREVIEW
   // ==========================================================================
 
   Widget _buildProfileImage(_EditProfileColorSet colors) {
@@ -684,7 +690,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   Center(
                     child: Stack(
                       children: [
-                        // Tap the avatar to open camera directly
+                        // Tap the avatar to open camera directly.
                         GestureDetector(
                           onTap: _openCamera,
                           child: Container(
@@ -699,12 +705,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             child: ClipOval(child: _buildProfileImage(colors)),
                           ),
                         ),
-                        // Edit badge – tap to remove media (no camera/gallery)
+
+                        // Edit badge:
+                        //   • No media set  → opens camera (same as tapping avatar)
+                        //   • Media is set  → shows remove-media sheet
                         Positioned(
                           right: 0,
                           bottom: 0,
                           child: GestureDetector(
-                            onTap: _showRemoveOptions,
+                            onTap: _hasMedia ? _showRemoveOptions : _openCamera,
                             child: Container(
                               width: 24,
                               height: 24,
@@ -719,7 +728,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             ),
                           ),
                         ),
-                        // Video badge on existing profile video
+
+                        // Video badge on existing profile video.
                         if (_currentPhotoUrl != null &&
                             _currentPhotoUrl != 'default' &&
                             _isVideoUrl(_currentPhotoUrl) &&
@@ -737,7 +747,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                                   size: 12, color: Colors.white),
                             ),
                           ),
-                        // Video badge on pending video
+
+                        // Video badge on pending video.
                         if (_pendingVideoFile != null)
                           Positioned(
                             top: 4,
