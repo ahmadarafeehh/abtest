@@ -145,17 +145,12 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   int followers = 0;
   int following = 0;
   int postCount = 0;
-  int viewCount = 0;
   List<dynamic> _followersList = [];
   List<dynamic> _followingList = [];
   bool isLoading = false;
   bool hasError = false;
   String errorMessage = '';
   final SupabaseProfileMethods _profileMethods = SupabaseProfileMethods();
-
-  // ── A/B test: true = show view-count badges, false = hide ─────────────
-  bool _showViewCount = false;
-  // ──────────────────────────────────────────────────────────────────────
 
   // ── No-posts nudge timer ─────────────────────────────────────────────
   Timer? _noPostNudgeTimer;
@@ -188,12 +183,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         : _LightColors();
   }
 
-  String _formatViewCount(int count) {
-    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
-    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
-    return count.toString();
-  }
-
   bool _isVideoFile(String url) {
     if (url.isEmpty || url == 'default') return false;
     final l = url.toLowerCase();
@@ -217,7 +206,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     _scrollController = ScrollController();
     _scrollController.addListener(_scrollListener);
     getData();
-    _fetchViewCount();
   }
 
   @override
@@ -490,13 +478,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   // ========== DATA FETCHING ==========
-  Future<void> _fetchViewCount() async {
-    try {
-      final count = await _profileMethods.getProfileViewCount(widget.uid);
-      if (mounted) setState(() => viewCount = count);
-    } catch (_) {}
-  }
-
   Future<void> getData() async {
     if (!mounted) return;
     setState(() {
@@ -547,8 +528,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         return;
       }
 
-      // ── Read A/B test flag ───────────────────────────────────────────
-      final bool abTest = userResponse['test'] == true;
+      // ── Read A/B test flag for nudge timer (view count removed) ──────
+      final bool isTestUser = userResponse['test'] == true;
       // ─────────────────────────────────────────────────────────────────
 
       final followersResponse = await _supabase
@@ -604,11 +585,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           _postsOffset = initialPosts.length;
           _hasMorePosts = totalPostCount > initialPosts.length;
           _isFirstLoad = false;
-          _showViewCount = abTest;
         });
 
         // Start 1-minute nudge timer for test users with no posts
-        if (abTest && totalPostCount == 0) {
+        if (isTestUser && totalPostCount == 0) {
           _startNoPostNudgeTimer();
         }
       }
@@ -1118,11 +1098,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== POST ITEM — badge gated by _showViewCount ==========
+  // ========== POST ITEM — view count badge removed ==========
   Widget _buildPostItem(Map<String, dynamic> post, _ColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
-    final int viewsCount = (post['viewers_count'] as num?)?.toInt() ?? 0;
 
     return GestureDetector(
       onTap: () {
@@ -1171,37 +1150,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
                                   color: colors.iconColor, size: 20),
                             )),
                   ),
-
-            // ── view count badge — only for A/B treatment group ───
-            if (_showViewCount)
-              Positioned(
-                bottom: 4,
-                left: 4,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.55),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.visibility,
-                          size: 10, color: Colors.white),
-                      const SizedBox(width: 3),
-                      Text(
-                        _formatViewCount(viewsCount),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 9,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
           ],
         ),
       ),
