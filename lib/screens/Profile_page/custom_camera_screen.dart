@@ -306,9 +306,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       MaterialPageRoute(
         builder: (_) => GalleryPickerScreen(
           onPostUploaded: widget.onPostUploaded,
-          // Pass profile callbacks so the gallery picker also respects the flow.
-          onImageResult: widget.onImageResult,
-          onVideoResult: widget.onVideoResult,
         ),
       ),
     );
@@ -389,8 +386,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             child: SafeArea(
               bottom: false,
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -416,8 +412,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               right: 0,
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 5),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                   decoration: BoxDecoration(
                     color: Colors.black.withOpacity(0.45),
                     borderRadius: BorderRadius.circular(20),
@@ -451,8 +447,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             child: SafeArea(
               top: false,
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 28, vertical: 24),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -466,8 +462,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
-                              color: Colors.white.withOpacity(0.6),
-                              width: 1.5),
+                              color: Colors.white.withOpacity(0.6), width: 1.5),
                           color: Colors.grey[900],
                           image: _galleryThumbnail != null
                               ? DecorationImage(
@@ -478,8 +473,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                         ),
                         child: _galleryThumbnail == null
                             ? Icon(Icons.photo_library_rounded,
-                                color: Colors.white.withOpacity(0.6),
-                                size: 22)
+                                color: Colors.white.withOpacity(0.6), size: 22)
                             : _lastGalleryAssetIsVideo
                                 ? const Align(
                                     alignment: Alignment.topRight,
@@ -503,8 +497,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                         height: _isRecordingVideo ? 64 : 76,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color:
-                              _isRecordingVideo ? Colors.red : Colors.white,
+                          color: _isRecordingVideo ? Colors.red : Colors.white,
                           border: Border.all(
                             color: Colors.white.withOpacity(0.8),
                             width: _isRecordingVideo ? 4 : 5,
