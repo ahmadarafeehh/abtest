@@ -196,10 +196,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
   int following = 0;
   bool _isMutualFollow = false;
 
-  // ── A/B test: true = viewer is in the "show view counts" group ────────
-  bool _showViewCount = false;
-  // ──────────────────────────────────────────────────────────────────────
-
   final Map<String, VideoPlayerController> _videoControllers = {};
   final Map<String, bool> _videoControllersInitialized = {};
 
@@ -236,12 +232,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     return themeProvider.themeMode == ThemeMode.dark
         ? _OtherProfileDarkColors()
         : _OtherProfileLightColors();
-  }
-
-  String _formatViewCount(int count) {
-    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
-    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
-    return count.toString();
   }
 
   @override
@@ -430,7 +420,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
         _loadPostsCountAndFirstBatch(),
         _loadGalleriesData(),
         _loadBlockStatus(),
-        _loadCurrentUserAbTest(), // ── A/B flag ──
       ]);
       if (!_isBlocked && mounted) await _loadRelationshipData();
     } catch (_) {
@@ -440,30 +429,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       }
     } finally {
       if (mounted) setState(() => isLoading = false);
-    }
-  }
-
-  // ── Reads `test` column from the CURRENT (logged-in) user's row.
-  // true  → show view-count badge  (treatment group)
-  // false → hide view-count badge  (control group)
-  Future<void> _loadCurrentUserAbTest() async {
-    final userProvider = Provider.of<UserProvider>(context, listen: false);
-    final String? currentUserId =
-        userProvider.firebaseUid ?? userProvider.supabaseUid;
-    if (currentUserId == null || currentUserId.isEmpty) return;
-
-    try {
-      final result = await _supabase
-          .from('users')
-          .select('test')
-          .eq('uid', currentUserId)
-          .maybeSingle();
-
-      if (mounted) {
-        setState(() => _showViewCount = result?['test'] == true);
-      }
-    } catch (_) {
-      // On error keep _showViewCount = false (control)
     }
   }
 
@@ -1585,12 +1550,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ========== POST ITEM — badge shown only to test == true users ==========
+  // ========== POST ITEM — view count badge removed ==========
   Widget _buildOtherPostItem(
       Map<String, dynamic> post, _OtherProfileColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
-    final int viewCount = (post['viewers_count'] as num?)?.toInt() ?? 0;
 
     return FutureBuilder<bool>(
       future: SupabaseBlockMethods().isMutuallyBlocked(
@@ -1650,37 +1614,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                 isVideo
                     ? _buildPostVideoPlayer(postUrl, colors)
                     : _buildImageThumbnail(postUrl, colors),
-
-                // ── view count badge — only for A/B treatment group ──
-                if (_showViewCount)
-                  Positioned(
-                    bottom: 4,
-                    left: 4,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 5, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.55),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.visibility,
-                              size: 10, color: Colors.white),
-                          const SizedBox(width: 3),
-                          Text(
-                            _formatViewCount(viewCount),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 9,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
               ],
             ),
           ),
