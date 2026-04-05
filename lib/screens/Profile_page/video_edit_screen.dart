@@ -105,9 +105,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   double get _maxTrimMs => _isProfileFlow ? 5000.0 : 15000.0;
   Duration get _maxTrimDuration => Duration(milliseconds: _maxTrimMs.toInt());
 
-  // ── Total video duration (set after trimmer loads) ────────────────────────
-  double? _totalDurationMs;
-
   // ===========================================================================
   // LIFECYCLE
   // ===========================================================================
@@ -119,36 +116,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _logBoot());
     _initPreviewPlayer();
     _trimmer.loadVideo(videoFile: widget.videoFile);
-    // Wait for trimmer to load and get duration, then set initial trim range
-    _initTrimmerAndSetInitialRange();
-  }
-
-  Future<void> _initTrimmerAndSetInitialRange() async {
-    // Wait until trimmer has the video duration
-    int attempts = 0;
-    while (_trimmer.videoDuration == null && attempts < 20) {
-      await Future.delayed(const Duration(milliseconds: 100));
-      attempts++;
-    }
-    final total = _trimmer.videoDuration;
-    if (total != null && mounted) {
-      setState(() {
-        _totalDurationMs = total.inMilliseconds.toDouble();
-      });
-      // For profile flow, set end handle to min(5 sec, total duration)
-      if (_isProfileFlow && _totalDurationMs != null) {
-        final maxNormalized = (_maxTrimMs / _totalDurationMs!).clamp(0.0, 1.0);
-        // Only set if video is longer than 5 seconds
-        if (_totalDurationMs! > _maxTrimMs) {
-          setState(() {
-            _endValue = maxNormalized;
-            _trimDirty = true; // Mark as dirty so trim is saved on next
-          });
-          // Also update the trimmer viewer to reflect the new end value
-          _trimmer.updateTrim(start: _startValue, end: _endValue);
-        }
-      }
-    }
   }
 
   @override
@@ -688,7 +655,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         color: Colors.white54, size: 64)),
               if (isDrawActive)
                 Positioned(
-                  bottom: 12, left: 0, right: 0,
+                  bottom: 12,
+                  left: 0,
+                  right: 0,
                   child: Center(
                     child: Container(
                       padding: const EdgeInsets.symmetric(
@@ -719,7 +688,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               if (_isDragging)
                 Positioned(
-                  bottom: 0, left: 0, right: 0,
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
                   child: TrashZone(isOverTrash: _isOverTrash),
                 ),
             ]),
@@ -796,8 +767,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           height: 18,
                           child: CircularProgressIndicator(
                               color: Colors.black, strokeWidth: 2))
-                      : Text(
-                          _isProfileFlow ? 'Done' : 'Next',
+                      : Text(_isProfileFlow ? 'Done' : 'Next',
                           style: const TextStyle(
                               color: Colors.black,
                               fontSize: 14,
@@ -856,9 +826,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                     if (showBadge)
                       Positioned(
-                        top: 2, right: 2,
+                        top: 2,
+                        right: 2,
                         child: Container(
-                          width: 8, height: 8,
+                          width: 8,
+                          height: 8,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: Colors.white,
@@ -976,7 +948,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   } catch (_) {}
                 },
                 child: Container(
-                  width: 30, height: 30,
+                  width: 30,
+                  height: 30,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: Colors.white.withOpacity(0.1),
@@ -987,7 +960,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     _isTrimPlaying
                         ? Icons.pause_rounded
                         : Icons.play_arrow_rounded,
-                    color: Colors.white, size: 15,
+                    color: Colors.white,
+                    size: 15,
                   ),
                 ),
               ),
@@ -1005,7 +979,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                   child: _isSavingTrimInline
                       ? const SizedBox(
-                          width: 14, height: 14,
+                          width: 14,
+                          height: 14,
                           child: CircularProgressIndicator(
                               color: Colors.black, strokeWidth: 2))
                       : Text('Save',
@@ -1064,23 +1039,35 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   IconData _toolIcon(_Tool t) {
     switch (t) {
-      case _Tool.trim:    return Icons.content_cut_rounded;
-      case _Tool.filters: return Icons.auto_fix_high_rounded;
-      case _Tool.adjust:  return Icons.tune_rounded;
-      case _Tool.draw:    return Icons.brush_rounded;
-      case _Tool.text:    return Icons.text_fields_rounded;
-      case _Tool.rotate:  return Icons.rotate_90_degrees_cw_rounded;
+      case _Tool.trim:
+        return Icons.content_cut_rounded;
+      case _Tool.filters:
+        return Icons.auto_fix_high_rounded;
+      case _Tool.adjust:
+        return Icons.tune_rounded;
+      case _Tool.draw:
+        return Icons.brush_rounded;
+      case _Tool.text:
+        return Icons.text_fields_rounded;
+      case _Tool.rotate:
+        return Icons.rotate_90_degrees_cw_rounded;
     }
   }
 
   String _toolLabel(_Tool t) {
     switch (t) {
-      case _Tool.trim:    return 'Trim';
-      case _Tool.filters: return 'Filters';
-      case _Tool.adjust:  return 'Adjust';
-      case _Tool.draw:    return 'Draw';
-      case _Tool.text:    return 'Text';
-      case _Tool.rotate:  return 'Rotate';
+      case _Tool.trim:
+        return 'Trim';
+      case _Tool.filters:
+        return 'Filters';
+      case _Tool.adjust:
+        return 'Adjust';
+      case _Tool.draw:
+        return 'Draw';
+      case _Tool.text:
+        return 'Text';
+      case _Tool.rotate:
+        return 'Rotate';
     }
   }
 }
