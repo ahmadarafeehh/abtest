@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
-import 'package:image_picker/image_picker.dart';
 import 'package:Ratedly/resources/storage_methods.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:provider/provider.dart';
@@ -15,10 +14,11 @@ import 'package:video_player/video_player.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/screens/Profile_page/media_edit_screen.dart';
 import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
+import 'package:Ratedly/screens/Profile_page/custom_camera_screen.dart'; // added
 import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 // =============================================================================
-// COLOUR SCHEME
+// COLOUR SCHEME (unchanged)
 // =============================================================================
 
 class _EditProfileColorSet {
@@ -98,13 +98,9 @@ class EditProfileScreen extends StatefulWidget {
 class _EditProfileScreenState extends State<EditProfileScreen> {
   final TextEditingController _bioController = TextEditingController();
   final supabase.SupabaseClient _supabase = supabase.Supabase.instance.client;
-  final ImagePicker _picker = ImagePicker();
 
   // ── Pending media ──────────────────────────────────────────────────────────
-  // For images: already-rendered bytes (baked from MediaEditScreen).
   Uint8List? _pendingImageBytes;
-
-  // For videos: trimmed + edited file + full edit result.
   File? _pendingVideoFile;
   VideoEditResult? _pendingVideoEditResult;
 
@@ -116,7 +112,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   bool _isVerified = false;
   bool _shouldRemoveCurrentMedia = false;
 
-  // ── Profile-video preview player (for the existing URL) ───────────────────
+  // ── Profile-video preview player ──────────────────────────────────────────
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
 
@@ -158,8 +154,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   Widget _buildDefaultAvatar(_EditProfileColorSet colors) => Center(
-        child:
-            Icon(Icons.account_circle, size: 96, color: colors.iconColor),
+        child: Icon(Icons.account_circle, size: 96, color: colors.iconColor),
       );
 
   // ==========================================================================
@@ -186,8 +181,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Future<void> _checkIfUserAgreed() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(
-        () => _hasAgreedToWarning = prefs.getBool('hasAgreedToProfileWarning') ?? false);
+    setState(() => _hasAgreedToWarning =
+        prefs.getBool('hasAgreedToProfileWarning') ?? false);
   }
 
   Future<void> _saveUserAgreement() async {
@@ -259,108 +254,115 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   // ==========================================================================
-  // PICK IMAGE → MediaEditScreen
+  // DIRECT CAMERA LAUNCH (photo & video via the same CustomCameraScreen)
   // ==========================================================================
 
-  Future<void> _pickImage(ImageSource source) async {
-    try {
-      final picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 1024,
-        maxHeight: 1024,
-        imageQuality: 85,
-      );
-      if (picked == null) return;
-
-      Uint8List bytes = await picked.readAsBytes();
-
-      // Compress if needed
-      Uint8List? compressed = await FlutterImageCompress.compressWithList(
-        bytes,
-        minWidth: 800,
-        minHeight: 800,
-        quality: 80,
-        format: CompressFormat.jpeg,
-      );
-      bytes = compressed ?? bytes;
-
-      if (!mounted) return;
-
-      // Push into the shared image editor; onResult delivers baked bytes.
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => MediaEditScreen(
-            imageBytes: bytes,
-            onResult: (Uint8List rendered) {
-              setState(() {
-                _pendingImageBytes = rendered;
-                _pendingVideoFile = null;
-                _pendingVideoEditResult = null;
-                _shouldRemoveCurrentMedia = false;
-                _profileVideoController?.dispose();
-                _profileVideoController = null;
-                _isProfileVideoInitialized = false;
-              });
-            },
-          ),
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error picking image: $e')));
-      }
+  Future<void> _openCamera() async {
+    // Show warning if not agreed yet
+    if (!_hasAgreedToWarning) {
+      final agreed = await _showWarningDialog();
+      if (agreed != true) return;
+      await _saveUserAgreement();
     }
+
+    // Push the custom camera screen with profile callbacks
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CustomCameraScreen(
+          onImageResult: (Uint8List renderedImage) {
+            setState(() {
+              _pendingImageBytes = renderedImage;
+              _pendingVideoFile = null;
+              _pendingVideoEditResult = null;
+              _shouldRemoveCurrentMedia = false;
+              _profileVideoController?.dispose();
+              _profileVideoController = null;
+              _isProfileVideoInitialized = false;
+            });
+          },
+          onVideoResult: (VideoEditResult result) {
+            setState(() {
+              _pendingVideoFile = result.videoFile;
+              _pendingVideoEditResult = result;
+              _pendingImageBytes = null;
+              _shouldRemoveCurrentMedia = false;
+              _profileVideoController?.dispose();
+              _profileVideoController = null;
+              _isProfileVideoInitialized = false;
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<bool?> _showWarningDialog() async {
+    final colors =
+        _getColors(Provider.of<ThemeProvider>(context, listen: false));
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: colors.cardColor,
+        title: Text('Profile Picture Guidelines',
+            style: TextStyle(
+                color: colors.textColor, fontWeight: FontWeight.bold)),
+        content: Text.rich(TextSpan(children: [
+          TextSpan(
+              text:
+                  'Using inappropriate content as your profile picture will get your device ',
+              style: TextStyle(color: colors.textColor)),
+          const TextSpan(
+              text: 'permanently banned',
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+          TextSpan(text: '.', style: TextStyle(color: colors.textColor)),
+        ])),
+        actions: [
+          TextButton(
+            child: Text('I Understand',
+                style: TextStyle(
+                    color: colors.textColor, fontWeight: FontWeight.bold)),
+            onPressed: () => Navigator.of(ctx).pop(true),
+          ),
+        ],
+      ),
+    );
   }
 
   // ==========================================================================
-  // PICK VIDEO → VideoEditScreen  (15 s cap already inside VideoEditScreen)
+  // REMOVE MEDIA (triggered by the edit badge)
   // ==========================================================================
 
-  Future<void> _pickVideo(ImageSource source) async {
-    try {
-      final picked = await _picker.pickVideo(
-        source: source,
-        maxDuration: const Duration(minutes: 5),
-      );
-      if (picked == null) return;
-
-      final videoFile = File(picked.path);
-
-      if (!mounted) return;
-
-      // Push into the shared video editor; onResult delivers edited file + result.
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => VideoEditScreen(
-            videoFile: videoFile,
-            onResult: (VideoEditResult result) {
-              setState(() {
-                _pendingVideoFile = result.videoFile;
-                _pendingVideoEditResult = result;
-                _pendingImageBytes = null;
-                _shouldRemoveCurrentMedia = false;
-                _profileVideoController?.dispose();
-                _profileVideoController = null;
-                _isProfileVideoInitialized = false;
-              });
-            },
-          ),
+  void _showRemoveOptions() {
+    final colors =
+        _getColors(Provider.of<ThemeProvider>(context, listen: false));
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: colors.cardColor,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.delete, color: colors.iconColor),
+              title: Text('Remove profile media',
+                  style: TextStyle(color: colors.textColor)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _removePhoto();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.cancel, color: colors.iconColor),
+              title: Text('Cancel', style: TextStyle(color: colors.textColor)),
+              onTap: () => Navigator.pop(ctx),
+            ),
+          ],
         ),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to pick video: $e')));
-      }
-    }
+      ),
+    );
   }
-
-  // ==========================================================================
-  // REMOVE
-  // ==========================================================================
 
   void _removePhoto() {
     final isVideo = _currentPhotoUrl != null &&
@@ -386,137 +388,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   // ==========================================================================
-  // OPTIONS SHEETS
-  // ==========================================================================
-
-  void _showEditOptions(_EditProfileColorSet colors) {
-    final hasAny = _currentPhotoUrl != null && _currentPhotoUrl != 'default';
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: colors.cardColor,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: Icon(Icons.photo_library, color: colors.iconColor),
-              title: Text('Choose from Gallery',
-                  style: TextStyle(color: colors.textColor)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _onChangeMediaTapped();
-              },
-            ),
-            if (hasAny)
-              ListTile(
-                leading: Icon(Icons.delete, color: colors.iconColor),
-                title: Text('Remove', style: TextStyle(color: colors.textColor)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _removePhoto();
-                },
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _onChangeMediaTapped() {
-    if (!_hasAgreedToWarning) {
-      _showWarningThenGalleryOptions();
-    } else {
-      _showGalleryOptions();
-    }
-  }
-
-  Future<void> _showWarningThenGalleryOptions() async {
-    final colors =
-        _getColors(Provider.of<ThemeProvider>(context, listen: false));
-
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: colors.cardColor,
-        title: Text('Profile Picture Guidelines',
-            style: TextStyle(
-                color: colors.textColor, fontWeight: FontWeight.bold)),
-        content: Text.rich(TextSpan(children: [
-          TextSpan(
-              text:
-                  'Using inappropriate content as your profile picture will get your device ',
-              style: TextStyle(color: colors.textColor)),
-          const TextSpan(
-              text: 'permanently banned',
-              style:
-                  TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
-          TextSpan(text: '.', style: TextStyle(color: colors.textColor)),
-        ])),
-        actions: [
-          TextButton(
-            child: Text('I Understand',
-                style: TextStyle(
-                    color: colors.textColor, fontWeight: FontWeight.bold)),
-            onPressed: () async {
-              await _saveUserAgreement();
-              Navigator.of(ctx).pop();
-              _showGalleryOptions();
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showGalleryOptions() async {
-    final colors =
-        _getColors(Provider.of<ThemeProvider>(context, listen: false));
-
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        backgroundColor: colors.cardColor,
-        title:
-            Text('Choose Media Type', style: TextStyle(color: colors.textColor)),
-        children: [
-          SimpleDialogOption(
-            padding: const EdgeInsets.all(20),
-            child: Text('Photo from Gallery',
-                style: TextStyle(color: colors.textColor)),
-            onPressed: () {
-              Navigator.pop(ctx);
-              _pickImage(ImageSource.gallery);
-            },
-          ),
-          SimpleDialogOption(
-            padding: const EdgeInsets.all(20),
-            child: Text('Video from Gallery',
-                style: TextStyle(color: colors.textColor)),
-            onPressed: () {
-              Navigator.pop(ctx);
-              _pickVideo(ImageSource.gallery);
-            },
-          ),
-          SimpleDialogOption(
-            padding: const EdgeInsets.all(20),
-            child: Text('Cancel', style: TextStyle(color: colors.textColor)),
-            onPressed: () => Navigator.pop(ctx),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ==========================================================================
   // SAVE
   // ==========================================================================
 
   Future<void> _saveProfile() async {
     final uid = _resolvedUid;
     if (uid == null || uid.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('User not authenticated')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('User not authenticated')));
       return;
     }
 
@@ -545,12 +424,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                CircularProgressIndicator(
-                    color: colors.progressIndicatorColor),
+                CircularProgressIndicator(color: colors.progressIndicatorColor),
                 const SizedBox(height: 16),
                 Text('Saving profile…',
-                    style: TextStyle(
-                        color: colors.dialogTextColor, fontSize: 16)),
+                    style:
+                        TextStyle(color: colors.dialogTextColor, fontSize: 16)),
               ],
             ),
           ),
@@ -572,9 +450,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       }
 
       if (_pendingImageBytes != null) {
-        // Upload baked image bytes from MediaEditScreen.
-        final fileName =
-            'profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
+        final fileName = 'profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
         final photoUrl = await StorageMethods().uploadImageToSupabase(
           _pendingImageBytes!,
           fileName,
@@ -587,7 +463,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           oldMediaToDelete = _initialPhotoUrl;
         }
       } else if (_pendingVideoFile != null) {
-        // Upload trimmed video file from VideoEditScreen.
         final fileName =
             'profile_video_${DateTime.now().millisecondsSinceEpoch}.mp4';
         final videoBytes = await _pendingVideoFile!.readAsBytes();
@@ -675,15 +550,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   // ==========================================================================
-  // PROFILE IMAGE PREVIEW
-  //
-  // Priority: pending image > pending video (local) > existing URL
-  // For pending video, re-apply the edit result's color matrix so the
-  // preview in the profile screen matches what the user saw in VideoEditScreen.
+  // PROFILE IMAGE PREVIEW (unchanged)
   // ==========================================================================
 
   Widget _buildProfileImage(_EditProfileColorSet colors) {
-    // 1. Pending image — already rendered by MediaEditScreen.
     if (_pendingImageBytes != null) {
       return ClipOval(
         child: Image.memory(_pendingImageBytes!,
@@ -691,13 +561,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       );
     }
 
-    // 2. Pending video — show colour-filtered frame from the local file.
     if (_pendingVideoFile != null && _pendingVideoEditResult != null) {
       return ClipOval(
         child: ColorFiltered(
           colorFilter: ColorFilter.matrix(
-            _pendingVideoEditResult!.adjustments
-                .combinedMatrix(kFilters[_pendingVideoEditResult!.filterIndex].matrix),
+            _pendingVideoEditResult!.adjustments.combinedMatrix(
+                kFilters[_pendingVideoEditResult!.filterIndex].matrix),
           ),
           child: Container(
             width: 100,
@@ -711,7 +580,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       );
     }
 
-    // 3. Existing URL: video or image.
     if (_currentPhotoUrl != null && _currentPhotoUrl != 'default') {
       if (_isVideoUrl(_currentPhotoUrl)) {
         return _buildExistingVideoPreview(colors);
@@ -814,75 +682,76 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
                   // ── Avatar / media selector ──────────────────────────────
                   Center(
-                    child: GestureDetector(
-                      onTap: () => _showEditOptions(colors),
-                      child: Container(
-                        width: 100,
-                        height: 100,
-                        decoration: BoxDecoration(
-                          color: colors.cardColor,
-                          shape: BoxShape.circle,
-                          border:
-                              Border.all(color: colors.borderColor, width: 2),
-                        ),
-                        child: Stack(
-                          children: [
-                            ClipOval(child: _buildProfileImage(colors)),
-
-                            // Edit pen badge
-                            Positioned(
-                              right: 0,
-                              bottom: 0,
-                              child: Container(
-                                width: 24,
-                                height: 24,
-                                decoration: BoxDecoration(
-                                  color: colors.cardColor,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                      color: colors.backgroundColor, width: 2),
-                                ),
-                                child: Icon(Icons.edit,
-                                    size: 14, color: colors.iconColor),
-                              ),
+                    child: Stack(
+                      children: [
+                        // Tap the avatar to open camera directly
+                        GestureDetector(
+                          onTap: _openCamera,
+                          child: Container(
+                            width: 100,
+                            height: 100,
+                            decoration: BoxDecoration(
+                              color: colors.cardColor,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                  color: colors.borderColor, width: 2),
                             ),
-
-                            // Video badge on existing profile video
-                            if (_currentPhotoUrl != null &&
-                                _currentPhotoUrl != 'default' &&
-                                _isVideoUrl(_currentPhotoUrl) &&
-                                _pendingImageBytes == null &&
-                                _pendingVideoFile == null)
-                              Positioned(
-                                top: 4,
-                                right: 4,
-                                child: Container(
-                                  padding: const EdgeInsets.all(2),
-                                  decoration: const BoxDecoration(
-                                      color: Colors.black54,
-                                      shape: BoxShape.circle),
-                                  child: const Icon(Icons.videocam,
-                                      size: 12, color: Colors.white),
-                                ),
-                              ),
-
-                            // Video badge on pending video
-                            if (_pendingVideoFile != null)
-                              Positioned(
-                                top: 4,
-                                right: 4,
-                                child: Container(
-                                  padding: const EdgeInsets.all(2),
-                                  decoration: const BoxDecoration(
-                                      color: Colors.black54,
-                                      shape: BoxShape.circle),
-                                  child: const Icon(Icons.videocam,
-                                      size: 12, color: Colors.white),
-                                ),
-                              ),
-                          ],
+                            child: ClipOval(child: _buildProfileImage(colors)),
+                          ),
                         ),
-                      ),
+                        // Edit badge – tap to remove media (no camera/gallery)
+                        Positioned(
+                          right: 0,
+                          bottom: 0,
+                          child: GestureDetector(
+                            onTap: _showRemoveOptions,
+                            child: Container(
+                              width: 24,
+                              height: 24,
+                              decoration: BoxDecoration(
+                                color: colors.cardColor,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                    color: colors.backgroundColor, width: 2),
+                              ),
+                              child: Icon(Icons.edit,
+                                  size: 14, color: colors.iconColor),
+                            ),
+                          ),
+                        ),
+                        // Video badge on existing profile video
+                        if (_currentPhotoUrl != null &&
+                            _currentPhotoUrl != 'default' &&
+                            _isVideoUrl(_currentPhotoUrl) &&
+                            _pendingImageBytes == null &&
+                            _pendingVideoFile == null)
+                          Positioned(
+                            top: 4,
+                            right: 4,
+                            child: Container(
+                              padding: const EdgeInsets.all(2),
+                              decoration: const BoxDecoration(
+                                  color: Colors.black54,
+                                  shape: BoxShape.circle),
+                              child: const Icon(Icons.videocam,
+                                  size: 12, color: Colors.white),
+                            ),
+                          ),
+                        // Video badge on pending video
+                        if (_pendingVideoFile != null)
+                          Positioned(
+                            top: 4,
+                            right: 4,
+                            child: Container(
+                              padding: const EdgeInsets.all(2),
+                              decoration: const BoxDecoration(
+                                  color: Colors.black54,
+                                  shape: BoxShape.circle),
+                              child: const Icon(Icons.videocam,
+                                  size: 12, color: Colors.white),
+                            ),
+                          ),
+                      ],
                     ),
                   ),
 
