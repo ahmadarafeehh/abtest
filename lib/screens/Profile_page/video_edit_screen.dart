@@ -101,10 +101,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   static const double _panelH = 212.0;
 
   // ── Dynamic trim cap ──────────────────────────────────────────────────────
-  // Profile flow (onResult != null) → max 5 seconds
-  // Post flow (onResult == null)    → max 15 seconds
-  double get _maxTrimMs => widget.onResult != null ? 5000.0 : 15000.0;
+  bool get _isProfileFlow => widget.onResult != null;
+  double get _maxTrimMs => _isProfileFlow ? 5000.0 : 15000.0;
   Duration get _maxTrimDuration => Duration(milliseconds: _maxTrimMs.toInt());
+
+  // ── Total video duration (set after trimmer loads) ────────────────────────
+  double? _totalDurationMs;
 
   // ===========================================================================
   // LIFECYCLE
@@ -117,6 +119,36 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _logBoot());
     _initPreviewPlayer();
     _trimmer.loadVideo(videoFile: widget.videoFile);
+    // Wait for trimmer to load and get duration, then set initial trim range
+    _initTrimmerAndSetInitialRange();
+  }
+
+  Future<void> _initTrimmerAndSetInitialRange() async {
+    // Wait until trimmer has the video duration
+    int attempts = 0;
+    while (_trimmer.videoDuration == null && attempts < 20) {
+      await Future.delayed(const Duration(milliseconds: 100));
+      attempts++;
+    }
+    final total = _trimmer.videoDuration;
+    if (total != null && mounted) {
+      setState(() {
+        _totalDurationMs = total.inMilliseconds.toDouble();
+      });
+      // For profile flow, set end handle to min(5 sec, total duration)
+      if (_isProfileFlow && _totalDurationMs != null) {
+        final maxNormalized = (_maxTrimMs / _totalDurationMs!).clamp(0.0, 1.0);
+        // Only set if video is longer than 5 seconds
+        if (_totalDurationMs! > _maxTrimMs) {
+          setState(() {
+            _endValue = maxNormalized;
+            _trimDirty = true; // Mark as dirty so trim is saved on next
+          });
+          // Also update the trimmer viewer to reflect the new end value
+          _trimmer.updateTrim(start: _startValue, end: _endValue);
+        }
+      }
+    }
   }
 
   @override
@@ -147,7 +179,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           'filePath': widget.videoFile.path,
           'fileExists': fileExists,
           'fileSizeBytes': fileExists ? widget.videoFile.lengthSync() : 0,
-          'isProfileFlow': widget.onResult != null,
+          'isProfileFlow': _isProfileFlow,
           'maxTrimSeconds': _maxTrimDuration.inSeconds,
         },
       });
@@ -744,7 +776,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               ),
               Text(
-                widget.onResult != null ? 'Edit Profile Video' : 'Edit Video',
+                _isProfileFlow ? 'Edit Profile Video' : 'Edit Video',
                 style: const TextStyle(
                     color: Colors.white,
                     fontSize: 17,
@@ -765,7 +797,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           child: CircularProgressIndicator(
                               color: Colors.black, strokeWidth: 2))
                       : Text(
-                          widget.onResult != null ? 'Done' : 'Next',
+                          _isProfileFlow ? 'Done' : 'Next',
                           style: const TextStyle(
                               color: Colors.black,
                               fontSize: 14,
@@ -903,7 +935,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             trimmer: _trimmer,
             viewerHeight: 70,
             viewerWidth: MediaQuery.of(context).size.width - 16,
-            // Dynamic max length: 5s for profile, 15s for post
             maxVideoLength: _maxTrimDuration,
             editorProperties: TrimEditorProperties(
               circleSize: 12,
