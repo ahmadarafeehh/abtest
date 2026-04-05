@@ -172,7 +172,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
           details: 'previewSize=${controller.value.previewSize}');
 
       await controller.setFlashMode(_flashMode);
-      await _log('initCamera_flashSet', details: 'flashMode=${_flashMode.name}');
+      await _log('initCamera_flashSet',
+          details: 'flashMode=${_flashMode.name}');
 
       if (mounted) {
         setState(() {
@@ -226,8 +227,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     try {
       await _controller!.setFlashMode(next);
       setState(() => _flashMode = next);
-      await _log('toggleFlash',
-          details: 'from=${prev.name} to=${next.name}');
+      await _log('toggleFlash', details: 'from=${prev.name} to=${next.name}');
     } catch (e) {
       await _log('toggleFlash_error', errorMessage: e.toString());
     }
@@ -253,7 +253,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     try {
       final permission = await PhotoManager.requestPermissionExtend();
       await _log('loadGalleryThumbnail_permission',
-          details: 'isAuth=${permission.isAuth} status=${permission.name}');
+          details:
+              'isAuth=${permission.isAuth} status=${permission.name}');
       if (!permission.isAuth) return;
 
       final albums = await PhotoManager.getAssetPathList(
@@ -264,7 +265,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
           details: 'albumCount=${albums.length}');
       if (albums.isEmpty) return;
 
-      final assets = await albums.first.getAssetListRange(start: 0, end: 1);
+      final assets =
+          await albums.first.getAssetListRange(start: 0, end: 1);
       await _log('loadGalleryThumbnail_assets',
           details: 'assetCount=${assets.length}');
       if (assets.isEmpty) return;
@@ -333,8 +335,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
 
       Uint8List bytes = await photo.readAsBytes();
       await _log('capturePhoto_bytesRead',
-          details:
-              'byteLength=${bytes.length} isFront=$_isFrontCamera');
+          details: 'byteLength=${bytes.length} isFront=$_isFrontCamera');
 
       if (_isFrontCamera) {
         final decoded = img.decodeJpg(bytes);
@@ -494,18 +495,20 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       return;
     }
 
-    // NOTE: GalleryPickerScreen does not currently accept onImageResult /
-    // onVideoResult. To support the profile flow from the gallery, those named
-    // parameters must first be added to GalleryPickerScreen's constructor.
     await _log('openGallery_navigating',
-        details:
-            'GalleryPickerScreen onPostUploaded=${widget.onPostUploaded != null}');
+        details: 'GalleryPickerScreen '
+            'onImageResult=${widget.onImageResult != null} '
+            'onVideoResult=${widget.onVideoResult != null}');
 
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => GalleryPickerScreen(
           onPostUploaded: widget.onPostUploaded,
+          // Forward profile-flow callbacks so gallery picks also respect the
+          // 5-second trim cap and return results instead of pushing AddPostScreen.
+          onImageResult: widget.onImageResult,
+          onVideoResult: widget.onVideoResult,
         ),
       ),
     );
