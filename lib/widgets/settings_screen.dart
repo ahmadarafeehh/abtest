@@ -10,7 +10,6 @@ import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/screens/Profile_page/blocked_profile_screen.dart';
 import 'package:Ratedly/resources/block_firestore_methods.dart';
-import 'package:Ratedly/widgets/algorithm_explanation_screen.dart';
 import 'package:Ratedly/widgets/blue_verification_screen.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:Ratedly/providers/user_provider.dart';
@@ -773,15 +772,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showAlgorithmExplanation() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const AlgorithmExplanationScreen(),
-      ),
-    );
-  }
-
   Widget _buildOptionTile({
     required String title,
     required IconData icon,
@@ -871,11 +861,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       icon: Icons.person_add_alt_1,
                       onTap: _inviteFriend,
                       tileKey: _inviteButtonKey,
-                    ),
-                    _buildOptionTile(
-                      title: 'Algorithm',
-                      icon: Icons.psychology,
-                      onTap: _showAlgorithmExplanation,
                     ),
                     _buildOptionTile(
                       title: 'Dark Mode',
