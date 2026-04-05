@@ -11,16 +11,16 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 enum _Tool { trim, filters, adjust, draw, text, rotate }
 
 // ---------------------------------------------------------------------------
-// Bundles every visual edit so AddPostScreen can re-apply them as
-// widget layers when showing the preview / thumbnail.
+// Bundles every visual edit so AddPostScreen (and EditProfileScreen) can
+// re-apply them as widget layers on the preview.
 // ---------------------------------------------------------------------------
 class VideoEditResult {
-  final File videoFile; // trimmed file (rotation applied as widget transform)
+  final File videoFile; // trimmed file
   final int filterIndex;
   final EditAdjustments adjustments;
   final List<DrawStroke> strokes;
   final List<TextOverlay> overlays;
-  final int rotationQuarters; // applied via Transform.rotate in both screens
+  final int rotationQuarters;
 
   const VideoEditResult({
     required this.videoFile,
@@ -36,10 +36,15 @@ class VideoEditScreen extends StatefulWidget {
   final File videoFile;
   final VoidCallback? onPostUploaded;
 
+  /// If provided, called with the [VideoEditResult] instead of pushing
+  /// [AddPostScreen]. Used by the profile-video editing flow.
+  final ValueChanged<VideoEditResult>? onResult;
+
   const VideoEditScreen({
     Key? key,
     required this.videoFile,
     this.onPostUploaded,
+    this.onResult,
   }) : super(key: key);
 
   @override
@@ -47,15 +52,12 @@ class VideoEditScreen extends StatefulWidget {
 }
 
 class _VideoEditScreenState extends State<VideoEditScreen> {
-  // ── Preview player ─────────────────────────────────────────────────────────
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
   bool _isPlaying = false;
 
-  // ── Active video file (updated after trim) ─────────────────────────────────
   late File _activeVideoFile;
 
-  // ── Trimmer ────────────────────────────────────────────────────────────────
   final Trimmer _trimmer = Trimmer();
   double _startValue = 0.0;
   double _endValue = 0.0;
@@ -64,17 +66,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _trimDirty = false;
   bool _trimApplied = false;
 
-  // ── Processing spinner (shown on Next button) ───────────────────────────────
   bool _isProcessing = false;
 
-  // ── Active tool ────────────────────────────────────────────────────────────
   _Tool _activeTool = _Tool.trim;
 
-  // ── Filter / Adjust ────────────────────────────────────────────────────────
   int _selectedFilterIndex = 0;
   EditAdjustments _adj = const EditAdjustments();
 
-  // ── Draw ───────────────────────────────────────────────────────────────────
   final GlobalKey _overlayKey = GlobalKey();
   final List<DrawStroke> _strokes = [];
   DrawStroke? _currentStroke;
@@ -83,7 +81,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   double _drawSize = 8.0;
   bool _isDrawing = false;
 
-  // ── Text overlays ──────────────────────────────────────────────────────────
   bool _isTyping = false;
   final List<TextOverlay> _overlays = [];
   int? _selectedOverlayIndex;
@@ -94,19 +91,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   bool _tBold = true;
   int _tFont = 0;
 
-  // ── Rotation (widget-level; passed to AddPostScreen via rotationQuarters) ──
   int _rotationQuarters = 0;
 
-  // ── Drag-to-trash ──────────────────────────────────────────────────────────
   bool _isDragging = false;
   int? _dragIndex;
   bool _isOverTrash = false;
 
-  // ── Layout ─────────────────────────────────────────────────────────────────
   static const double _topBarH = 56.0;
   static const double _panelH = 212.0;
-
-  // Maximum selectable trim duration in milliseconds.
   static const double _maxTrimMs = 15000.0;
 
   // ===========================================================================
@@ -150,6 +142,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           'filePath': widget.videoFile.path,
           'fileExists': fileExists,
           'fileSizeBytes': fileExists ? widget.videoFile.lengthSync() : 0,
+          'isProfileFlow': widget.onResult != null,
         },
       });
     } catch (_) {}
@@ -475,13 +468,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   // ===========================================================================
-  // NEXT — bundle ALL edit state and pass to AddPostScreen.
-  // Rotation is passed as rotationQuarters; AddPostScreen applies it via
-  // Transform.rotate on the preview widget (no file-level bake needed).
+  // NEXT
+  //
+  // • Profile flow  (`onResult` is set)  — calls the callback and pops.
+  // • Post flow     (`onResult` is null) — pushes [AddPostScreen].
   // ===========================================================================
 
   Future<void> _onNext() async {
-    // 1. Save trim if the user moved the handles but didn't tap Save.
     if (_trimDirty) {
       await _saveTrim();
       if (!mounted) return;
@@ -502,16 +495,23 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         rotationQuarters: _rotationQuarters,
       );
 
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => AddPostScreen(
-            initialVideoFile: result.videoFile,
-            editResult: result,
-            onPostUploaded: widget.onPostUploaded,
+      if (widget.onResult != null) {
+        // ── Profile flow ──────────────────────────────────────────────
+        widget.onResult!(result);
+        if (mounted) Navigator.pop(context);
+      } else {
+        // ── Post flow ─────────────────────────────────────────────────
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AddPostScreen(
+              initialVideoFile: result.videoFile,
+              editResult: result,
+              onPostUploaded: widget.onPostUploaded,
+            ),
           ),
-        ),
-      );
+        );
+      }
     } catch (e, st) {
       await _log(
           operation: 'next/error',
@@ -652,9 +652,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         color: Colors.white54, size: 64)),
               if (isDrawActive)
                 Positioned(
-                  bottom: 12,
-                  left: 0,
-                  right: 0,
+                  bottom: 12, left: 0, right: 0,
                   child: Center(
                     child: Container(
                       padding: const EdgeInsets.symmetric(
@@ -685,9 +683,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               if (_isDragging)
                 Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
+                  bottom: 0, left: 0, right: 0,
                   child: TrashZone(isOverTrash: _isOverTrash),
                 ),
             ]),
@@ -743,11 +739,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       color: Colors.white, size: 20),
                 ),
               ),
-              const Text('Edit Video',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600)),
+              Text(
+                // Slightly different title in the profile flow.
+                widget.onResult != null ? 'Edit Profile Video' : 'Edit Video',
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600),
+              ),
               GestureDetector(
                 onTap: _isProcessing ? null : _onNext,
                 child: Container(
@@ -762,8 +761,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           height: 18,
                           child: CircularProgressIndicator(
                               color: Colors.black, strokeWidth: 2))
-                      : const Text('Next',
-                          style: TextStyle(
+                      : Text(
+                          widget.onResult != null ? 'Done' : 'Next',
+                          style: const TextStyle(
                               color: Colors.black,
                               fontSize: 14,
                               fontWeight: FontWeight.w700)),
@@ -821,11 +821,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                     if (showBadge)
                       Positioned(
-                        top: 2,
-                        right: 2,
+                        top: 2, right: 2,
                         child: Container(
-                          width: 8,
-                          height: 8,
+                          width: 8, height: 8,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: Colors.white,
@@ -902,7 +900,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             trimmer: _trimmer,
             viewerHeight: 70,
             viewerWidth: MediaQuery.of(context).size.width - 16,
-            // ── Hard cap: users may select at most 15 seconds. ──────────────
+            // ── 15-second cap applies in both post and profile flows ──
             maxVideoLength: const Duration(seconds: 15),
             editorProperties: TrimEditorProperties(
               circleSize: 12,
@@ -915,14 +913,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             ),
             onChangeStart: (v) {
               _startValue = v;
-              // Keep the window at most 15 s wide when the left handle moves.
               if (_endValue - _startValue > _maxTrimMs) {
                 _endValue = _startValue + _maxTrimMs;
               }
               _trimDirty = true;
             },
             onChangeEnd: (v) {
-              // Clamp so the selected segment never exceeds 15 seconds.
               _endValue =
                   v > _startValue + _maxTrimMs ? _startValue + _maxTrimMs : v;
               _trimDirty = true;
@@ -946,8 +942,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   } catch (_) {}
                 },
                 child: Container(
-                  width: 30,
-                  height: 30,
+                  width: 30, height: 30,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: Colors.white.withOpacity(0.1),
@@ -958,8 +953,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     _isTrimPlaying
                         ? Icons.pause_rounded
                         : Icons.play_arrow_rounded,
-                    color: Colors.white,
-                    size: 15,
+                    color: Colors.white, size: 15,
                   ),
                 ),
               ),
@@ -977,8 +971,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ),
                   child: _isSavingTrimInline
                       ? const SizedBox(
-                          width: 14,
-                          height: 14,
+                          width: 14, height: 14,
                           child: CircularProgressIndicator(
                               color: Colors.black, strokeWidth: 2))
                       : Text('Save',
@@ -1037,35 +1030,23 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   IconData _toolIcon(_Tool t) {
     switch (t) {
-      case _Tool.trim:
-        return Icons.content_cut_rounded;
-      case _Tool.filters:
-        return Icons.auto_fix_high_rounded;
-      case _Tool.adjust:
-        return Icons.tune_rounded;
-      case _Tool.draw:
-        return Icons.brush_rounded;
-      case _Tool.text:
-        return Icons.text_fields_rounded;
-      case _Tool.rotate:
-        return Icons.rotate_90_degrees_cw_rounded;
+      case _Tool.trim:    return Icons.content_cut_rounded;
+      case _Tool.filters: return Icons.auto_fix_high_rounded;
+      case _Tool.adjust:  return Icons.tune_rounded;
+      case _Tool.draw:    return Icons.brush_rounded;
+      case _Tool.text:    return Icons.text_fields_rounded;
+      case _Tool.rotate:  return Icons.rotate_90_degrees_cw_rounded;
     }
   }
 
   String _toolLabel(_Tool t) {
     switch (t) {
-      case _Tool.trim:
-        return 'Trim';
-      case _Tool.filters:
-        return 'Filters';
-      case _Tool.adjust:
-        return 'Adjust';
-      case _Tool.draw:
-        return 'Draw';
-      case _Tool.text:
-        return 'Text';
-      case _Tool.rotate:
-        return 'Rotate';
+      case _Tool.trim:    return 'Trim';
+      case _Tool.filters: return 'Filters';
+      case _Tool.adjust:  return 'Adjust';
+      case _Tool.draw:    return 'Draw';
+      case _Tool.text:    return 'Text';
+      case _Tool.rotate:  return 'Rotate';
     }
   }
 }
