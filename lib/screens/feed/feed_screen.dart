@@ -787,10 +787,19 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
     final persistedId = FeedCacheService.getLastUserIdSync();
 
     if (persistedId == null || persistedId.isEmpty) {
-      // Fresh install – nothing cached, wait for auth to arrive via
-      // didChangeDependencies.
-      _essentialUiReady = true;
-      if (mounted) setState(() {});
+      // No cached session – show the skeleton until auth resolves and
+      // _loadInitialData sets _essentialUiReady = true.
+      //
+      // IMPORTANT: do NOT set _essentialUiReady = true synchronously here.
+      // This method is called from initState (before the widget is mounted),
+      // so any synchronous assignment causes the very first build() call to
+      // see _essentialUiReady = true and skip the FeedSkeleton branch,
+      // leaving the parent navigation layer's logo visible instead.
+      // Deferring to a post-frame callback guarantees the skeleton is
+      // rendered on the first frame while we wait for auth to resolve.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _essentialUiReady = true);
+      });
       return;
     }
 
