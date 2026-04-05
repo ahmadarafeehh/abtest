@@ -16,7 +16,17 @@ import 'package:provider/provider.dart';
 
 class CustomCameraScreen extends StatefulWidget {
   final VoidCallback? onPostUploaded;
-  const CustomCameraScreen({Key? key, this.onPostUploaded}) : super(key: key);
+  // NEW: Profile picture flow – returns final edited image bytes
+  final ValueChanged<Uint8List>? onImageResult;
+  // NEW: Profile video flow – returns final edited video result
+  final ValueChanged<VideoEditResult>? onVideoResult;
+
+  const CustomCameraScreen({
+    Key? key,
+    this.onPostUploaded,
+    this.onImageResult,
+    this.onVideoResult,
+  }) : super(key: key);
 
   @override
   State<CustomCameraScreen> createState() => _CustomCameraScreenState();
@@ -179,10 +189,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
 
   // ===========================================================================
   // SHUTTER — single entry point for the shutter button tap
-  //
-  // If a recording is already in progress, tap = stop video.
-  // If no recording, tap = take photo.
-  // This prevents the "tap to stop" being misread as "take photo".
   // ===========================================================================
 
   Future<void> _onShutterTap() async {
@@ -201,8 +207,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       final XFile photo = await _controller!.takePicture();
       Uint8List bytes = await photo.readAsBytes();
 
-      // Flip front camera horizontally so the result is not mirrored,
-      // matching how Instagram and Snapchat handle front camera photos.
+      // Flip front camera horizontally so the result is not mirrored
       if (_isFrontCamera) {
         final decoded = img.decodeJpg(bytes);
         if (decoded != null) {
@@ -212,15 +217,29 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       }
 
       if (mounted) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => MediaEditScreen(
-              imageBytes: bytes,
-              onPostUploaded: widget.onPostUploaded,
+        if (widget.onImageResult != null) {
+          // ── Profile picture flow ──────────────────────────────────
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => MediaEditScreen(
+                imageBytes: bytes,
+                onResult: widget.onImageResult,
+              ),
             ),
-          ),
-        );
+          );
+        } else {
+          // ── Post flow ─────────────────────────────────────────────
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => MediaEditScreen(
+                imageBytes: bytes,
+                onPostUploaded: widget.onPostUploaded,
+              ),
+            ),
+          );
+        }
       }
     } catch (e) {
       await _logError('_capturePhoto', e);
@@ -258,15 +277,29 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       });
 
       if (mounted) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => VideoEditScreen(
-              videoFile: File(video.path),
-              onPostUploaded: widget.onPostUploaded,
+        if (widget.onVideoResult != null) {
+          // ── Profile video flow ────────────────────────────────────
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => VideoEditScreen(
+                videoFile: File(video.path),
+                onResult: widget.onVideoResult,
+              ),
             ),
-          ),
-        );
+          );
+        } else {
+          // ── Post flow ─────────────────────────────────────────────
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => VideoEditScreen(
+                videoFile: File(video.path),
+                onPostUploaded: widget.onPostUploaded,
+              ),
+            ),
+          );
+        }
       }
     } catch (e) {
       _recordingTimer?.cancel();
@@ -481,10 +514,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                     ),
 
                     // Shutter button
-                    // onTap  → _onShutterTap (stops video if recording, else photo)
-                    // onLongPressStart → starts video recording
-                    // onLongPressEnd is intentionally removed — user now taps
-                    // to stop recording instead of releasing the long press.
                     GestureDetector(
                       onTap: _onShutterTap,
                       onLongPressStart: (_) => _startVideoRecording(),
