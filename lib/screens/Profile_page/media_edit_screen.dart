@@ -1,3 +1,4 @@
+// lib/screens/Profile_page/media_edit_screen.dart
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
@@ -12,10 +13,15 @@ class MediaEditScreen extends StatefulWidget {
   final Uint8List imageBytes;
   final VoidCallback? onPostUploaded;
 
+  /// If provided, called with the final rendered bytes instead of pushing
+  /// [AddPostScreen]. Used by the profile-picture editing flow.
+  final ValueChanged<Uint8List>? onResult;
+
   const MediaEditScreen({
     Key? key,
     required this.imageBytes,
     this.onPostUploaded,
+    this.onResult,
   }) : super(key: key);
 
   @override
@@ -25,29 +31,20 @@ class MediaEditScreen extends StatefulWidget {
 class _MediaEditScreenState extends State<MediaEditScreen> {
   final GlobalKey _previewKey = GlobalKey();
 
-  // ── Mutable image bytes (updated when crop is confirmed) ──────────────────
   late Uint8List _editBytes;
 
-  // ── Filter + Adjust ───────────────────────────────────────────────────────
   int _filterIndex = 0;
   EditAdjustments _adj = const EditAdjustments();
 
-  // ── Crop ──────────────────────────────────────────────────────────────────
-  // Normalised rect (0-1 in both axes). Full image = (0, 0, 1, 1).
   Rect _cropRect = const Rect.fromLTRB(0, 0, 1, 1);
-  // Tracks which snap preset is active (for the panel highlight).
   CropAspect _cropAspect = CropAspect.free;
-  // Raw image dimensions — needed to compute accurate aspect-ratio snaps.
   int _imgW = 1;
   int _imgH = 1;
-  // Whether the user has confirmed a non-full crop (shows badge on tab).
   bool _cropApplied = false;
 
-  // ── Blur ──────────────────────────────────────────────────────────────────
   BlurType _blurType = BlurType.none;
   double _blurIntensity = 8.0;
 
-  // ── Draw ──────────────────────────────────────────────────────────────────
   final List<DrawStroke> _strokes = [];
   DrawStroke? _currentStroke;
   DrawTool _drawTool = DrawTool.brush;
@@ -55,7 +52,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   double _drawSize = 8.0;
   bool _isDrawing = false;
 
-  // ── Text ──────────────────────────────────────────────────────────────────
   final List<TextOverlay> _overlays = [];
   int? _selectedOverlayIndex;
   bool _isTyping = false;
@@ -66,25 +62,18 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
   bool _tBold = true;
   int _tFont = 0;
 
-  // ── Drag-to-trash ─────────────────────────────────────────────────────────
   bool _isDragging = false;
   int? _dragIndex;
   bool _isOverTrash = false;
 
-  // ── Rotation ──────────────────────────────────────────────────────────────
   int _rotationQuarters = 0;
 
-  // ── UI ────────────────────────────────────────────────────────────────────
   _Tab _activeTab = _Tab.filters;
   bool _isRendering = false;
 
   static const double _topBarH = 56.0;
   static const double _tabBarH = 48.0;
   static const double _panelH  = 108.0;
-
-  // ===========================================================================
-  // LIFECYCLE
-  // ===========================================================================
 
   @override
   void initState() {
@@ -100,8 +89,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
     super.dispose();
   }
 
-  /// Decodes just enough to read the image dimensions so that aspect-ratio
-  /// snap calculations are accurate for non-square images.
   Future<void> _loadImageDimensions() async {
     try {
       final codec = await ui.instantiateImageCodec(_editBytes);
@@ -113,117 +100,72 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
         });
         frame.image.dispose();
       }
-    } catch (_) {
-      // Fallback — snap calculations will be slightly off for non-square images
-      // but this is non-critical.
-    }
+    } catch (_) {}
   }
-
-  // ===========================================================================
-  // MATRIX
-  // ===========================================================================
 
   List<double> get _matrix =>
       _adj.combinedMatrix(kFilters[_filterIndex].matrix);
 
-  // ===========================================================================
-  // CROP — snap presets
-  // ===========================================================================
-
-  /// Converts an aspect-ratio preset into a centred normalised Rect that
-  /// is as large as possible while fitting inside the raw image.
   void _snapCropToAspect(CropAspect aspect) {
     setState(() => _cropAspect = aspect);
-
     final ratio = aspect.ratio;
     if (ratio == null) {
-      // Free — reset to full image.
       setState(() => _cropRect = const Rect.fromLTRB(0, 0, 1, 1));
       return;
     }
-
     final iw = _imgW.toDouble();
     final ih = _imgH.toDouble();
     final imageRatio = iw / ih;
-
     double left, top, right, bottom;
-
     if (imageRatio >= ratio) {
-      // Image is wider than target → crop the width, full height.
       final cropW = ih * ratio;
       left   = ((iw - cropW) / 2) / iw;
       right  = 1.0 - left;
       top    = 0.0;
       bottom = 1.0;
     } else {
-      // Image is taller than target → crop the height, full width.
       final cropH = iw / ratio;
       top    = ((ih - cropH) / 2) / ih;
       bottom = 1.0 - top;
       left   = 0.0;
       right  = 1.0;
     }
-
     setState(() => _cropRect = Rect.fromLTRB(left, top, right, bottom));
   }
-
-  // ===========================================================================
-  // ROTATION
-  // ===========================================================================
 
   void _rotate() =>
       setState(() => _rotationQuarters = (_rotationQuarters + 1) % 4);
 
-  // ===========================================================================
-  // CROP — eager application (called when user presses "Done")
-  // ===========================================================================
-
-  /// Applies [cropRect] (normalised 0–1) to [bytes] immediately and returns
-  /// the cropped JPEG bytes. Called as soon as the user confirms a crop so
-  /// that the preview updates right away.
   Uint8List _applyCropEager(Uint8List bytes, Rect cropRect) {
     var decoded = img.decodeImage(bytes);
     if (decoded == null) return bytes;
-
     final iw = decoded.width.toDouble();
     final ih = decoded.height.toDouble();
     final x = (cropRect.left   * iw).round().clamp(0, decoded.width  - 1);
     final y = (cropRect.top    * ih).round().clamp(0, decoded.height - 1);
     final w = (cropRect.width  * iw).round().clamp(1, decoded.width  - x);
     final h = (cropRect.height * ih).round().clamp(1, decoded.height - y);
-
     decoded = img.copyCrop(decoded, x: x, y: y, width: w, height: h);
     return Uint8List.fromList(img.encodeJpg(decoded, quality: 92));
   }
 
-  // ===========================================================================
-  // CROP CONFIRM / RESET
-  // ===========================================================================
-
   Future<void> _confirmCrop() async {
     final isFull = _cropRect == const Rect.fromLTRB(0, 0, 1, 1);
-
     if (isFull) {
-      // Nothing to do — just go back to the filters tab.
       setState(() {
         _cropApplied = false;
         _activeTab   = _Tab.filters;
       });
       return;
     }
-
-    // Apply the crop to the live bytes immediately so the preview reflects it.
     final cropped = _applyCropEager(_editBytes, _cropRect);
-
     setState(() {
       _editBytes   = cropped;
-      _cropRect    = const Rect.fromLTRB(0, 0, 1, 1); // reset — already baked in
+      _cropRect    = const Rect.fromLTRB(0, 0, 1, 1);
       _cropAspect  = CropAspect.free;
       _cropApplied = true;
       _activeTab   = _Tab.filters;
     });
-
-    // Refresh image dimensions so future aspect-ratio snaps are accurate.
     await _loadImageDimensions();
   }
 
@@ -234,10 +176,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
       _cropApplied = false;
     });
   }
-
-  // ===========================================================================
-  // TEXT
-  // ===========================================================================
 
   void _enterTextMode() {
     _textCtrl.clear();
@@ -276,10 +214,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
     setState(() => _isTyping = false);
   }
 
-  // ===========================================================================
-  // DRAG-TO-TRASH
-  // ===========================================================================
-
   bool _overTrash(Offset pos, double h) => pos.dy * h >= h - kTrashZoneH;
 
   void _onDragStart(int i) => setState(() {
@@ -313,10 +247,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
       }
     });
   }
-
-  // ===========================================================================
-  // DRAW
-  // ===========================================================================
 
   void _onDrawStart(DragStartDetails d) {
     if (_activeTab != _Tab.draw) return;
@@ -353,10 +283,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
     }
   }
 
-  // ===========================================================================
-  // RENDER & NEXT
-  // ===========================================================================
-
   Future<Uint8List> _renderFinalImage() async {
     setState(() {
       _isRendering = true;
@@ -381,13 +307,21 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
     }
   }
 
+  /// Called when the user taps "Next".
+  ///
+  /// • Profile flow  (`onResult` is set)  — calls the callback and pops.
+  /// • Post flow     (`onResult` is null) — pushes [AddPostScreen].
   Future<void> _onNext() async {
     try {
-      // The RepaintBoundary already captures the Transform.rotate applied
-      // inside it, so the rotation is baked into `rendered`. Calling
-      // _applyRotation a second time would rotate the image twice.
       final rendered = await _renderFinalImage();
-      if (mounted) {
+      if (!mounted) return;
+
+      if (widget.onResult != null) {
+        // ── Profile flow ──────────────────────────────────────────────
+        widget.onResult!(rendered);
+        Navigator.pop(context);
+      } else {
+        // ── Post flow ─────────────────────────────────────────────────
         Navigator.push(
             context,
             MaterialPageRoute(
@@ -403,10 +337,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
       }
     }
   }
-
-  // ===========================================================================
-  // BUILD
-  // ===========================================================================
 
   @override
   Widget build(BuildContext context) {
@@ -433,8 +363,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
           SizedBox(
             height: _topBarH,
             child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -463,8 +392,10 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                                   height: 18,
                                   child: CircularProgressIndicator(
                                       color: Colors.black, strokeWidth: 2))
-                              : const Text('Next',
-                                  style: TextStyle(
+                              : Text(
+                                  // Show "Done" instead of "Next" in profile flow.
+                                  widget.onResult != null ? 'Done' : 'Next',
+                                  style: const TextStyle(
                                       color: Colors.black,
                                       fontSize: 14,
                                       fontWeight: FontWeight.w700)))),
@@ -477,7 +408,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
           SizedBox(
             height: imageH,
             child: Stack(children: [
-              // Draw canvas
               Positioned.fill(
                 child: GestureDetector(
                   onTap: _activeTab != _Tab.draw
@@ -492,11 +422,9 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                     key: _previewKey,
                     child: Stack(
                       children: [
-                        // ✅ SOLID BLACK BACKGROUND – FIXES WHITE BORDERS
                         Positioned.fill(
                           child: Container(color: Colors.black),
                         ),
-                        // Filtered image
                         Positioned.fill(
                           child: ColorFiltered(
                             colorFilter: ColorFilter.matrix(_matrix),
@@ -508,7 +436,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                                     height: double.infinity)),
                           ),
                         ),
-                        // Blur overlay
                         if (_blurType != BlurType.none)
                           Positioned.fill(
                               child: BlurOverlay(
@@ -516,7 +443,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                             blurType: _blurType,
                             blurIntensity: _blurIntensity,
                           )),
-                        // Drawing layer
                         Positioned.fill(
                           child: CustomPaint(
                             painter: DrawingPainter(
@@ -525,7 +451,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                             ),
                           ),
                         ),
-                        // Text overlays
                         ..._overlays.asMap().entries.map((entry) {
                           final index = entry.key;
                           final o = entry.value;
@@ -569,9 +494,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                 ),
               ),
 
-              // ── Interactive crop overlay ─────────────────────────────
-              // Sits OUTSIDE the RepaintBoundary so it is not baked into
-              // the exported image — the crop is applied via _applyCropEager.
               if (_activeTab == _Tab.crop)
                 Positioned.fill(
                   child: InteractiveCropOverlay(
@@ -585,14 +507,12 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                   ),
                 ),
 
-              // ── Crop action bar ───────────────────────────────────────
               if (_activeTab == _Tab.crop)
                 Positioned(
                   bottom: 16, left: 24, right: 24,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      // Reset
                       GestureDetector(
                         onTap: _resetCrop,
                         child: Container(
@@ -611,7 +531,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                                   fontWeight: FontWeight.w500)),
                         ),
                       ),
-                      // Done
                       GestureDetector(
                         onTap: _confirmCrop,
                         child: Container(
@@ -632,12 +551,9 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                   ),
                 ),
 
-              // Draw cursor indicator
               if (_activeTab == _Tab.draw)
                 Positioned(
-                    bottom: 12,
-                    left: 0,
-                    right: 0,
+                    bottom: 12, left: 0, right: 0,
                     child: Center(
                         child: Container(
                       padding: const EdgeInsets.symmetric(
@@ -663,20 +579,15 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                       ]),
                     ))),
 
-              // Trash zone
               if (_isDragging)
                 Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
+                    bottom: 0, left: 0, right: 0,
                     child: TrashZone(isOverTrash: _isOverTrash)),
             ]),
           ),
 
-          // ── Tab bar ───────────────────────────────────────────────────
           _buildTabBar(),
 
-          // ── Panel ─────────────────────────────────────────────────────
           Container(
               height: _panelH,
               color: Colors.black,
@@ -685,7 +596,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
           SizedBox(height: botPad),
         ]),
 
-        // ── Text entry overlay ────────────────────────────────────────────
         if (_isTyping)
           Positioned.fill(
               child: TextEntryOverlay(
@@ -706,10 +616,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
       ]),
     );
   }
-
-  // ===========================================================================
-  // TAB BAR
-  // ===========================================================================
 
   Widget _buildTabBar() => Container(
         height: _tabBarH,
@@ -746,7 +652,6 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                                 ? Colors.white
                                 : Colors.white.withOpacity(0.4),
                             size: 18),
-                        // Small dot when crop has been applied
                         if (tab == _Tab.crop && _cropApplied && !isActive)
                           Positioned(
                             top: -2, right: -4,
