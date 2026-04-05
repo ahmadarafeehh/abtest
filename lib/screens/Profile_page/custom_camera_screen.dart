@@ -57,16 +57,59 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   bool get _isProfileFlow =>
       widget.onImageResult != null || widget.onVideoResult != null;
 
+  // ===========================================================================
+  // LOGGING
+  // ===========================================================================
+
+  /// Sends a structured log row to the [editprof] table.
+  /// Never throws — all errors are swallowed so logging never breaks the UI.
+  Future<void> _log(
+    String event, {
+    String? details,
+    String? errorMessage,
+  }) async {
+    try {
+      String? userId;
+      try {
+        final user = Provider.of<UserProvider>(context, listen: false).user;
+        userId = user?.uid;
+      } catch (e) {
+        userId = 'provider_unavailable: $e';
+      }
+
+      await Supabase.instance.client.from('editprof').insert({
+        'user_id': userId,
+        'screen': 'CustomCameraScreen',
+        'event': event,
+        'details': details,
+        'error_message': errorMessage,
+      });
+    } catch (e) {
+      // Logging must never crash the app.
+      debugPrint('[editprof] Failed to log "$event": $e');
+    }
+  }
+
+  // ===========================================================================
+  // LIFECYCLE
+  // ===========================================================================
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _log('initState',
+        details: 'isProfileFlow=$_isProfileFlow '
+            'hasImageResult=${widget.onImageResult != null} '
+            'hasVideoResult=${widget.onVideoResult != null} '
+            'hasPostUploaded=${widget.onPostUploaded != null}');
     _initCamera();
     _loadGalleryThumbnail();
   }
 
   @override
   void dispose() {
+    _log('dispose');
     WidgetsBinding.instance.removeObserver(this);
     _recordingTimer?.cancel();
     _controller?.dispose();
@@ -75,6 +118,10 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _log('lifecycleChange',
+        details: 'state=${state.name} '
+            'controllerNull=${_controller == null} '
+            'isInitialized=$_isInitialized');
     if (_controller == null || !_isInitialized) return;
     if (state == AppLifecycleState.inactive) {
       _controller?.dispose();
@@ -88,9 +135,18 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   Future<void> _initCamera() async {
+    await _log('initCamera_start',
+        details: 'isFrontCamera=$_isFrontCamera flashMode=${_flashMode.name}');
     try {
       _cameras = await availableCameras();
-      if (_cameras.isEmpty) return;
+      await _log('initCamera_camerasFound',
+          details: 'count=${_cameras.length} '
+              'directions=${_cameras.map((c) => c.lensDirection.name).join(',')}');
+
+      if (_cameras.isEmpty) {
+        await _log('initCamera_noCameras');
+        return;
+      }
 
       final camera = _isFrontCamera
           ? _cameras.firstWhere(
@@ -100,6 +156,10 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               (c) => c.lensDirection == CameraLensDirection.back,
               orElse: () => _cameras.first);
 
+      await _log('initCamera_selectedCamera',
+          details:
+              'name=${camera.name} direction=${camera.lensDirection.name}');
+
       final controller = CameraController(
         camera,
         ResolutionPreset.high,
@@ -108,30 +168,50 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       );
 
       await controller.initialize();
+      await _log('initCamera_controllerInitialized',
+          details: 'previewSize=${controller.value.previewSize}');
+
       await controller.setFlashMode(_flashMode);
+      await _log('initCamera_flashSet', details: 'flashMode=${_flashMode.name}');
 
       if (mounted) {
         setState(() {
           _controller = controller;
           _isInitialized = true;
         });
+        await _log('initCamera_success');
+      } else {
+        await _log('initCamera_notMounted_afterInit');
       }
-    } catch (e) {
+    } catch (e, st) {
+      final stStr = st.toString();
+      await _log('initCamera_error',
+          details:
+              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
+          errorMessage: e.toString());
       await _logError('_initCamera', e);
     }
   }
 
   Future<void> _switchCamera() async {
-    if (_cameras.length < 2) return;
+    await _log('switchCamera_start',
+        details:
+            'currentFront=$_isFrontCamera cameraCount=${_cameras.length}');
+    if (_cameras.length < 2) {
+      await _log('switchCamera_skipped', details: 'only one camera available');
+      return;
+    }
     setState(() => _isInitialized = false);
     await _controller?.dispose();
     _controller = null;
     _isFrontCamera = !_isFrontCamera;
+    await _log('switchCamera_switching', details: 'newFront=$_isFrontCamera');
     await _initCamera();
   }
 
   Future<void> _toggleFlash() async {
     if (_controller == null || !_isInitialized) return;
+    final FlashMode prev = _flashMode;
     FlashMode next;
     switch (_flashMode) {
       case FlashMode.off:
@@ -146,7 +226,11 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     try {
       await _controller!.setFlashMode(next);
       setState(() => _flashMode = next);
-    } catch (_) {}
+      await _log('toggleFlash',
+          details: 'from=${prev.name} to=${next.name}');
+    } catch (e) {
+      await _log('toggleFlash_error', errorMessage: e.toString());
+    }
   }
 
   IconData get _flashIcon {
@@ -165,31 +249,49 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   Future<void> _loadGalleryThumbnail() async {
+    await _log('loadGalleryThumbnail_start');
     try {
       final permission = await PhotoManager.requestPermissionExtend();
+      await _log('loadGalleryThumbnail_permission',
+          details: 'isAuth=${permission.isAuth} status=${permission.name}');
       if (!permission.isAuth) return;
 
       final albums = await PhotoManager.getAssetPathList(
         type: RequestType.common,
         onlyAll: true,
       );
+      await _log('loadGalleryThumbnail_albums',
+          details: 'albumCount=${albums.length}');
       if (albums.isEmpty) return;
 
       final assets = await albums.first.getAssetListRange(start: 0, end: 1);
+      await _log('loadGalleryThumbnail_assets',
+          details: 'assetCount=${assets.length}');
       if (assets.isEmpty) return;
 
       final asset = assets.first;
       final thumb =
           await asset.thumbnailDataWithSize(const ThumbnailSize(200, 200));
 
+      await _log('loadGalleryThumbnail_thumb',
+          details: 'thumbNull=${thumb == null} '
+              'assetType=${asset.type.name} '
+              'assetId=${asset.id}');
+
       if (mounted && thumb != null) {
         setState(() {
           _galleryThumbnail = thumb;
           _lastGalleryAssetIsVideo = asset.type == AssetType.video;
         });
+        await _log('loadGalleryThumbnail_success',
+            details: 'isVideo=$_lastGalleryAssetIsVideo');
       }
-    } catch (e) {
-      // Gallery thumbnail is optional — fail silently.
+    } catch (e, st) {
+      final stStr = st.toString();
+      await _log('loadGalleryThumbnail_error',
+          details:
+              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
+          errorMessage: e.toString());
     }
   }
 
@@ -198,6 +300,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // ===========================================================================
 
   Future<void> _onShutterTap() async {
+    await _log('shutterTap',
+        details:
+            'isRecordingVideo=$_isRecordingVideo isCapturing=$_isCapturing');
     if (_isRecordingVideo) {
       await _stopVideoRecording();
     } else {
@@ -206,20 +311,48 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   }
 
   Future<void> _capturePhoto() async {
-    if (_controller == null || !_isInitialized || _isCapturing) return;
+    await _log('capturePhoto_start',
+        details: 'controllerNull=${_controller == null} '
+            'isInitialized=$_isInitialized '
+            'isCapturing=$_isCapturing '
+            'isProfileFlow=$_isProfileFlow '
+            'hasImageResult=${widget.onImageResult != null}');
+
+    if (_controller == null || !_isInitialized || _isCapturing) {
+      await _log('capturePhoto_skipped',
+          details: 'controllerNull=${_controller == null} '
+              'isInitialized=$_isInitialized '
+              'isCapturing=$_isCapturing');
+      return;
+    }
     setState(() => _isCapturing = true);
 
     try {
       final XFile photo = await _controller!.takePicture();
+      await _log('capturePhoto_taken', details: 'path=${photo.path}');
+
       Uint8List bytes = await photo.readAsBytes();
+      await _log('capturePhoto_bytesRead',
+          details:
+              'byteLength=${bytes.length} isFront=$_isFrontCamera');
 
       if (_isFrontCamera) {
         final decoded = img.decodeJpg(bytes);
         if (decoded != null) {
           final flipped = img.flipHorizontal(decoded);
-          bytes = Uint8List.fromList(img.encodeJpg(flipped, quality: 92));
+          bytes =
+              Uint8List.fromList(img.encodeJpg(flipped, quality: 92));
+          await _log('capturePhoto_frontFlipped',
+              details: 'newByteLength=${bytes.length}');
+        } else {
+          await _log('capturePhoto_decodeFailedSkippingFlip');
         }
       }
+
+      await _log('capturePhoto_navigating',
+          details: 'pushingMediaEditScreen '
+              'hasOnResult=${widget.onImageResult != null} '
+              'hasOnPostUploaded=${widget.onPostUploaded != null}');
 
       if (mounted) {
         Navigator.push(
@@ -234,8 +367,16 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             ),
           ),
         );
+        await _log('capturePhoto_navigated');
+      } else {
+        await _log('capturePhoto_notMounted_beforeNavigate');
       }
-    } catch (e) {
+    } catch (e, st) {
+      final stStr = st.toString();
+      await _log('capturePhoto_error',
+          details:
+              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
+          errorMessage: e.toString());
       await _logError('_capturePhoto', e);
       if (mounted) _showError('Could not capture photo. Please try again.');
     } finally {
@@ -244,31 +385,64 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   }
 
   Future<void> _startVideoRecording() async {
-    if (_controller == null || !_isInitialized || _isRecordingVideo) return;
+    await _log('startVideoRecording_start',
+        details: 'controllerNull=${_controller == null} '
+            'isInitialized=$_isInitialized '
+            'isRecording=$_isRecordingVideo');
+
+    if (_controller == null || !_isInitialized || _isRecordingVideo) {
+      await _log('startVideoRecording_skipped');
+      return;
+    }
     try {
       await _controller!.startVideoRecording();
       setState(() {
         _isRecordingVideo = true;
         _recordingSeconds = 0;
       });
+      await _log('startVideoRecording_started');
       _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() => _recordingSeconds++);
       });
-    } catch (e) {
+    } catch (e, st) {
+      final stStr = st.toString();
+      await _log('startVideoRecording_error',
+          details:
+              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
+          errorMessage: e.toString());
       await _logError('_startVideoRecording', e);
     }
   }
 
   Future<void> _stopVideoRecording() async {
-    if (_controller == null || !_isRecordingVideo) return;
+    await _log('stopVideoRecording_start',
+        details: 'controllerNull=${_controller == null} '
+            'isRecording=$_isRecordingVideo '
+            'elapsedSeconds=$_recordingSeconds '
+            'isProfileFlow=$_isProfileFlow '
+            'hasVideoResult=${widget.onVideoResult != null}');
+
+    if (_controller == null || !_isRecordingVideo) {
+      await _log('stopVideoRecording_skipped');
+      return;
+    }
     try {
       final XFile video = await _controller!.stopVideoRecording();
+      await _log('stopVideoRecording_stopped',
+          details:
+              'path=${video.path} elapsedSeconds=$_recordingSeconds');
+
       _recordingTimer?.cancel();
       _recordingTimer = null;
       setState(() {
         _isRecordingVideo = false;
         _recordingSeconds = 0;
       });
+
+      await _log('stopVideoRecording_navigating',
+          details: 'pushingVideoEditScreen '
+              'hasOnResult=${widget.onVideoResult != null} '
+              'hasOnPostUploaded=${widget.onPostUploaded != null}');
 
       if (mounted) {
         Navigator.push(
@@ -283,14 +457,22 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
             ),
           ),
         );
+        await _log('stopVideoRecording_navigated');
+      } else {
+        await _log('stopVideoRecording_notMounted_beforeNavigate');
       }
-    } catch (e) {
+    } catch (e, st) {
       _recordingTimer?.cancel();
       _recordingTimer = null;
       setState(() {
         _isRecordingVideo = false;
         _recordingSeconds = 0;
       });
+      final stStr = st.toString();
+      await _log('stopVideoRecording_error',
+          details:
+              'stackTrace=${stStr.substring(0, stStr.length.clamp(0, 400))}',
+          errorMessage: e.toString());
       await _logError('_stopVideoRecording', e);
     }
   }
@@ -299,8 +481,26 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   // GALLERY PICKER
   // ===========================================================================
 
-  void _openGallery() {
-    if (!mounted) return;
+  void _openGallery() async {
+    await _log('openGallery_start',
+        details: 'mounted=$mounted '
+            'isProfileFlow=$_isProfileFlow '
+            'hasImageResult=${widget.onImageResult != null} '
+            'hasVideoResult=${widget.onVideoResult != null} '
+            'hasPostUploaded=${widget.onPostUploaded != null}');
+
+    if (!mounted) {
+      await _log('openGallery_notMounted');
+      return;
+    }
+
+    // NOTE: GalleryPickerScreen does not currently accept onImageResult /
+    // onVideoResult. To support the profile flow from the gallery, those named
+    // parameters must first be added to GalleryPickerScreen's constructor.
+    await _log('openGallery_navigating',
+        details:
+            'GalleryPickerScreen onPostUploaded=${widget.onPostUploaded != null}');
+
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -309,12 +509,15 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
         ),
       ),
     );
+
+    await _log('openGallery_navigated');
   }
 
   // ===========================================================================
   // HELPERS
   // ===========================================================================
 
+  /// Legacy error logger kept for backward compatibility.
   Future<void> _logError(String operation, dynamic error) async {
     try {
       final user = Provider.of<UserProvider>(context, listen: false).user;
@@ -392,7 +595,10 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                   children: [
                     _CircleIconButton(
                       icon: Icons.close,
-                      onTap: () => Navigator.pop(context),
+                      onTap: () {
+                        _log('closeTapped');
+                        Navigator.pop(context);
+                      },
                     ),
                     _CircleIconButton(
                       icon: _flashIcon,
@@ -462,7 +668,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
-                              color: Colors.white.withOpacity(0.6), width: 1.5),
+                              color: Colors.white.withOpacity(0.6),
+                              width: 1.5),
                           color: Colors.grey[900],
                           image: _galleryThumbnail != null
                               ? DecorationImage(
@@ -473,7 +680,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                         ),
                         child: _galleryThumbnail == null
                             ? Icon(Icons.photo_library_rounded,
-                                color: Colors.white.withOpacity(0.6), size: 22)
+                                color: Colors.white.withOpacity(0.6),
+                                size: 22)
                             : _lastGalleryAssetIsVideo
                                 ? const Align(
                                     alignment: Alignment.topRight,
@@ -497,7 +705,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                         height: _isRecordingVideo ? 64 : 76,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: _isRecordingVideo ? Colors.red : Colors.white,
+                          color:
+                              _isRecordingVideo ? Colors.red : Colors.white,
                           border: Border.all(
                             color: Colors.white.withOpacity(0.8),
                             width: _isRecordingVideo ? 4 : 5,
