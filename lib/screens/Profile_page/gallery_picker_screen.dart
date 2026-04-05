@@ -11,7 +11,19 @@ import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 class GalleryPickerScreen extends StatefulWidget {
   final VoidCallback? onPostUploaded;
 
-  const GalleryPickerScreen({Key? key, this.onPostUploaded}) : super(key: key);
+  /// Profile-flow callbacks. When set, the picker is in profile mode:
+  /// - videos are forwarded to VideoEditScreen with the 5-second trim cap
+  /// - images are forwarded to MediaEditScreen which returns bytes instead
+  ///   of pushing AddPostScreen.
+  final ValueChanged<Uint8List>? onImageResult;
+  final ValueChanged<VideoEditResult>? onVideoResult;
+
+  const GalleryPickerScreen({
+    Key? key,
+    this.onPostUploaded,
+    this.onImageResult,
+    this.onVideoResult,
+  }) : super(key: key);
 
   @override
   State<GalleryPickerScreen> createState() => _GalleryPickerScreenState();
@@ -215,6 +227,10 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
             builder: (_) => VideoEditScreen(
               videoFile: file,
               onPostUploaded: widget.onPostUploaded,
+              // Forward the profile-flow callback so VideoEditScreen applies
+              // the 5-second trim cap and returns the result instead of
+              // pushing AddPostScreen.
+              onResult: widget.onVideoResult,
             ),
           ),
         );
@@ -228,6 +244,9 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
             builder: (_) => MediaEditScreen(
               imageBytes: bytes,
               onPostUploaded: widget.onPostUploaded,
+              // Forward the profile-flow callback so MediaEditScreen returns
+              // bytes instead of pushing AddPostScreen.
+              onResult: widget.onImageResult,
             ),
           ),
         );
