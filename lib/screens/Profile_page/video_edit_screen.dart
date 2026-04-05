@@ -10,12 +10,8 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 enum _Tool { trim, filters, adjust, draw, text, rotate }
 
-// ---------------------------------------------------------------------------
-// Bundles every visual edit so AddPostScreen (and EditProfileScreen) can
-// re-apply them as widget layers on the preview.
-// ---------------------------------------------------------------------------
 class VideoEditResult {
-  final File videoFile; // trimmed file
+  final File videoFile;
   final int filterIndex;
   final EditAdjustments adjustments;
   final List<DrawStroke> strokes;
@@ -100,7 +96,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   static const double _topBarH = 56.0;
   static const double _panelH = 212.0;
 
-  // ── Dynamic trim cap ──────────────────────────────────────────────────────
+  // ── Per-flow trim cap ─────────────────────────────────────────────────────
+  // Profile flow  (widget.onResult != null) →  5 s
+  // Post flow     (widget.onResult == null) → 15 s
   bool get _isProfileFlow => widget.onResult != null;
   double get _maxTrimMs => _isProfileFlow ? 5000.0 : 15000.0;
   Duration get _maxTrimDuration => Duration(milliseconds: _maxTrimMs.toInt());
@@ -499,11 +497,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       );
 
       if (widget.onResult != null) {
-        // ── Profile flow ──────────────────────────────────────────────
         widget.onResult!(result);
         if (mounted) Navigator.pop(context);
       } else {
-        // ── Post flow ─────────────────────────────────────────────────
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -907,6 +903,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             trimmer: _trimmer,
             viewerHeight: 70,
             viewerWidth: MediaQuery.of(context).size.width - 16,
+            // Profile flow → 5 s cap; post flow → 15 s cap.
             maxVideoLength: _maxTrimDuration,
             editorProperties: TrimEditorProperties(
               circleSize: 12,
