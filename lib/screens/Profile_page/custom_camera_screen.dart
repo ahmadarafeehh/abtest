@@ -16,9 +16,7 @@ import 'package:provider/provider.dart';
 
 class CustomCameraScreen extends StatefulWidget {
   final VoidCallback? onPostUploaded;
-  // NEW: Profile picture flow – returns final edited image bytes
   final ValueChanged<Uint8List>? onImageResult;
-  // NEW: Profile video flow – returns final edited video result
   final ValueChanged<VideoEditResult>? onVideoResult;
 
   const CustomCameraScreen({
@@ -42,11 +40,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   bool _isRecordingVideo = false;
   bool _isCapturing = false;
 
-  // Recording timer
   Timer? _recordingTimer;
   int _recordingSeconds = 0;
 
-  // Gallery thumbnail
   Uint8List? _galleryThumbnail;
   bool _lastGalleryAssetIsVideo = false;
 
@@ -188,7 +184,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   }
 
   // ===========================================================================
-  // SHUTTER — single entry point for the shutter button tap
+  // SHUTTER
   // ===========================================================================
 
   Future<void> _onShutterTap() async {
@@ -207,7 +203,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       final XFile photo = await _controller!.takePicture();
       Uint8List bytes = await photo.readAsBytes();
 
-      // Flip front camera horizontally so the result is not mirrored
+      // Flip front camera horizontally
       if (_isFrontCamera) {
         final decoded = img.decodeJpg(bytes);
         if (decoded != null) {
@@ -219,12 +215,18 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       if (mounted) {
         if (widget.onImageResult != null) {
           // ── Profile picture flow ──────────────────────────────────
-          Navigator.push(
+          // Wrap the callback to pop the camera screen after editing is done.
+          final originalCallback = widget.onImageResult!;
+          await Navigator.push(
             context,
             MaterialPageRoute(
               builder: (_) => MediaEditScreen(
                 imageBytes: bytes,
-                onResult: widget.onImageResult,
+                onResult: (Uint8List rendered) {
+                  originalCallback(rendered);
+                  // Pop the camera screen after the edit screen returns.
+                  if (mounted) Navigator.pop(context);
+                },
               ),
             ),
           );
@@ -279,12 +281,17 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       if (mounted) {
         if (widget.onVideoResult != null) {
           // ── Profile video flow ────────────────────────────────────
-          Navigator.push(
+          final originalCallback = widget.onVideoResult!;
+          await Navigator.push(
             context,
             MaterialPageRoute(
               builder: (_) => VideoEditScreen(
                 videoFile: File(video.path),
-                onResult: widget.onVideoResult,
+                onResult: (VideoEditResult result) {
+                  originalCallback(result);
+                  // Pop the camera screen after the edit screen returns.
+                  if (mounted) Navigator.pop(context);
+                },
               ),
             ),
           );
@@ -313,7 +320,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   }
 
   // ===========================================================================
-  // GALLERY PICKER — opens TikTok-style full gallery screen
+  // GALLERY PICKER
   // ===========================================================================
 
   void _openGallery() {
@@ -349,10 +356,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
-  // ===========================================================================
-  // RECORDING TIME FORMATTER
-  // ===========================================================================
-
   String _formatRecordingTime(int totalSeconds) {
     final m = totalSeconds ~/ 60;
     final s = totalSeconds % 60;
@@ -362,7 +365,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
   }
 
   // ===========================================================================
-  // PREVIEW — correct aspect ratio (no vertical stretching)
+  // PREVIEW
   // ===========================================================================
 
   Widget _buildPreview() {
@@ -374,8 +377,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
     final previewSize = _controller!.value.previewSize;
     if (previewSize == null) return CameraPreview(_controller!);
 
-    // previewSize is always landscape (long side first on iOS/Android).
-    // Swap for portrait: width = short side, height = long side.
     final double previewW = previewSize.height;
     final double previewH = previewSize.width;
 
@@ -401,10 +402,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // ── Camera preview ───────────────────────────────────────────────
           Positioned.fill(child: _buildPreview()),
-
-          // ── Top bar ──────────────────────────────────────────────────────
           Positioned(
             top: 0,
             left: 0,
@@ -429,8 +427,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               ),
             ),
           ),
-
-          // ── Recording indicator + seconds counter ────────────────────────
           if (_isRecordingVideo)
             Positioned(
               top: MediaQuery.of(context).padding.top + 56,
@@ -464,8 +460,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                 ),
               ),
             ),
-
-          // ── Bottom controls ──────────────────────────────────────────────
           Positioned(
             bottom: 0,
             left: 0,
@@ -479,7 +473,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    // Gallery thumbnail
                     GestureDetector(
                       onTap: _openGallery,
                       child: Container(
@@ -512,8 +505,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                                 : null,
                       ),
                     ),
-
-                    // Shutter button
                     GestureDetector(
                       onTap: _onShutterTap,
                       onLongPressStart: (_) => _startVideoRecording(),
@@ -546,8 +537,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
                                 : null,
                       ),
                     ),
-
-                    // Flip camera
                     _CircleIconButton(
                       icon: Icons.flip_camera_ios_rounded,
                       size: 28,
@@ -558,8 +547,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen>
               ),
             ),
           ),
-
-          // ── Hint ─────────────────────────────────────────────────────────
           Positioned(
             bottom: MediaQuery.of(context).padding.bottom + 120,
             left: 0,
