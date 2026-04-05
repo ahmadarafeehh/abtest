@@ -16,11 +16,9 @@ import 'package:Ratedly/resources/auth_methods.dart';
 import 'package:Ratedly/screens/login.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/services/debug_logger.dart';
+import 'package:Ratedly/screens/feed/feed_skeleton.dart';
+import 'package:Ratedly/services/feed_cache_service.dart';
 
-// ─────────────────────────────────────────────
-// Only logs to Supabase when something is genuinely broken.
-// Onboarding abandonment is tracked locally/in-memory only.
-// ─────────────────────────────────────────────
 Future<void> _logError({
   required String eventType,
   String? firebaseUid,
@@ -43,7 +41,6 @@ Future<void> _logError({
   } catch (_) {}
 }
 
-// Local-only onboarding funnel tracker (never hits Supabase unless there's an error)
 class _OnboardingTracker {
   final String userId;
   final DateTime sessionStart = DateTime.now();
@@ -81,8 +78,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   bool _usingCachedData = false;
   bool _needsMigration = false;
   bool _checkingMigration = false;
-
-  // FIX: replaced _isInitializing bool with a proper lock
   bool _initLock = false;
 
   String? _firebaseUid;
@@ -91,8 +86,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   String? _userName;
   String? _photoUrl;
   bool _isMigrated = false;
-
-  // FIX: onboarding can only move forward — never backwards
   bool _onboardingComplete = false;
 
   _OnboardingTracker? _tracker;
@@ -112,8 +105,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     _initializeAuth();
 
     _authSubscription = _supabase.auth.onAuthStateChange.listen((data) async {
-      // FIX: removed tokenRefreshed — it is NOT a new login and was causing
-      // re-initialization races that wiped onboardingComplete state
       if (data.event == AuthChangeEvent.signedIn) {
         DebugLogger.logEvent('AUTH_EVENT: signedIn — triggering init');
         if (!_initLock) {
@@ -125,8 +116,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
               'AUTH_EVENT: signedIn ignored — init already running');
         }
       } else if (data.event == AuthChangeEvent.tokenRefreshed) {
-        // Intentionally ignored. Token refreshes happen silently in the
-        // background and do not represent a meaningful auth state change.
         DebugLogger.logEvent(
             'AUTH_EVENT: tokenRefreshed — intentionally ignored');
       } else if (data.event == AuthChangeEvent.signedOut && mounted) {
@@ -150,7 +139,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Track if user backgrounds the app during onboarding (possible abandon signal)
     if (state == AppLifecycleState.paused &&
         (_firebaseUid != null || _supabaseUid != null) &&
         !_onboardingComplete) {
@@ -276,7 +264,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
               'SUPABASE_SESSION: ${records.length} record(s) found via supabase_uid=${session.user.id}');
 
           if (records.length > 1) {
-            // Log duplicate as a real error — this shouldn't happen
             await _logError(
               eventType: 'DUPLICATE_USER_RECORDS',
               supabaseUid: session.user.id,
@@ -335,7 +322,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           'country': null,
           'migrated': true,
           'supabase_uid': session.user.id,
-          'test': Random().nextBool(), // ← randomly assign A/B test group
+          'test': Random().nextBool(),
         };
         await _supabase.from('users').upsert(newUser, onConflict: 'uid');
         userData = newUser;
@@ -348,7 +335,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       _photoUrl = userData['photoUrl'] as String?;
       _isMigrated = userData['migrated'] == true;
 
-      // Start onboarding tracker for this user
       _tracker = _OnboardingTracker(_firebaseUid ?? _supabaseUid ?? 'unknown');
       _tracker!.step('provider_init');
 
@@ -360,7 +346,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
           ...userData,
         });
       } catch (e, stack) {
-        // Provider init failure IS an error — log it
         await _logError(
           eventType: 'USER_PROVIDER_INIT_ERROR',
           firebaseUid: _firebaseUid,
@@ -376,7 +361,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final hasCompletedOnboarding =
           await _checkOnboardingStatus(_firebaseUid!);
 
-      // FIX: onboarding state is a one-way ratchet — never go false→true→false
       if (mounted) {
         setState(() {
           if (!_onboardingComplete) {
@@ -396,11 +380,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
             'ONBOARDING: user ${_firebaseUid} onboarding complete — going home');
       }
 
-      // Cache for both Firebase and Supabase users
       _updateAuthCache(hasCompletedOnboarding);
       _runCountryChecks(_firebaseUid!);
     } catch (e, stack) {
-      // Session handling failure IS an error — log it
       await _logError(
         eventType: 'ERROR_SUPABASE_SESSION_HANDLING',
         firebaseUid: firebaseUser?.uid,
@@ -464,7 +446,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
             'INIT_USER_PROVIDER: no record found for uid=$_firebaseUid (may be new user)');
       }
     } catch (e, stack) {
-      // DB failure fetching user IS an error
       await _logError(
         eventType: 'INIT_USER_PROVIDER_ERROR',
         firebaseUid: _firebaseUid,
@@ -517,7 +498,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
             'ONBOARDING_BG_VERIFY: cache mismatch for $_firebaseUid — cache=$_onboardingComplete DB=$hasCompletedOnboarding');
         if (mounted) {
           setState(() {
-            // FIX: one-way ratchet — only allow false → true, never true → false
             if (!_onboardingComplete && hasCompletedOnboarding) {
               _onboardingComplete = true;
             }
@@ -684,7 +664,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) return _buildSimpleLoadingScreen();
+    if (_isLoading) return _buildLoadingScreen();
 
     final bool hasUser = _firebaseUid != null || _supabaseUid != null;
 
@@ -696,7 +676,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       return OnboardingFlow(
         onComplete: _handleOnboardingComplete,
         onError: (error) async {
-          // Onboarding flow crash IS an error
           await _logError(
             eventType: 'ONBOARDING_FLOW_CRASH',
             firebaseUid: _firebaseUid,
@@ -715,7 +694,20 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     return const GetStartedPage();
   }
 
-  Widget _buildSimpleLoadingScreen() {
+  /// Returns [FeedSkeleton] for returning signed-in users (persisted userId
+  /// exists in cache), and the logo spinner for first-time / logged-out users.
+  Widget _buildLoadingScreen() {
+    final hasPersistedUser =
+        FeedCacheService.getLastUserIdSync()?.isNotEmpty == true;
+
+    if (hasPersistedUser) {
+      // A returning user is signing back in — show the feed skeleton so the
+      // experience is consistent with what _AppBootstrap shows during init.
+      return const FeedSkeleton(isDark: true);
+    }
+
+    // No persisted user — first-time open or logged-out state.
+    // Show the branded logo screen while auth resolves.
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       body: Center(
