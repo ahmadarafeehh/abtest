@@ -99,7 +99,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   static const double _topBarH = 56.0;
   static const double _panelH = 212.0;
-  static const double _maxTrimMs = 15000.0;
+
+  // ── Dynamic trim cap ──────────────────────────────────────────────────────
+  // Profile flow (onResult != null) → max 5 seconds
+  // Post flow (onResult == null)    → max 15 seconds
+  double get _maxTrimMs => widget.onResult != null ? 5000.0 : 15000.0;
+  Duration get _maxTrimDuration => Duration(milliseconds: _maxTrimMs.toInt());
 
   // ===========================================================================
   // LIFECYCLE
@@ -143,6 +148,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           'fileExists': fileExists,
           'fileSizeBytes': fileExists ? widget.videoFile.lengthSync() : 0,
           'isProfileFlow': widget.onResult != null,
+          'maxTrimSeconds': _maxTrimDuration.inSeconds,
         },
       });
     } catch (_) {}
@@ -253,6 +259,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       'startValue': _startValue,
       'endValue': _endValue,
       'activeFilePath': _activeVideoFile.path,
+      'maxTrimMs': _maxTrimMs,
     });
 
     File? trimmedFile;
@@ -469,9 +476,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
   // ===========================================================================
   // NEXT
-  //
-  // • Profile flow  (`onResult` is set)  — calls the callback and pops.
-  // • Post flow     (`onResult` is null) — pushes [AddPostScreen].
   // ===========================================================================
 
   Future<void> _onNext() async {
@@ -740,7 +744,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
               ),
               Text(
-                // Slightly different title in the profile flow.
                 widget.onResult != null ? 'Edit Profile Video' : 'Edit Video',
                 style: const TextStyle(
                     color: Colors.white,
@@ -900,8 +903,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             trimmer: _trimmer,
             viewerHeight: 70,
             viewerWidth: MediaQuery.of(context).size.width - 16,
-            // ── 15-second cap applies in both post and profile flows ──
-            maxVideoLength: const Duration(seconds: 15),
+            // Dynamic max length: 5s for profile, 15s for post
+            maxVideoLength: _maxTrimDuration,
             editorProperties: TrimEditorProperties(
               circleSize: 12,
               borderWidth: 4,
