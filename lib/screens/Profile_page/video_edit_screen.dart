@@ -507,7 +507,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
       if (widget.onResult != null) {
         widget.onResult!(result);
-        if (mounted) Navigator.pop(context);
+        if (mounted) {
+          Navigator.popUntil(context, (route) => route.isFirst);
+        }
       } else {
         Navigator.push(
           context,
@@ -587,9 +589,26 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 child: IndexedStack(
                   index: isTrim ? 0 : 1,
                   children: [
-                    Container(
-                      color: Colors.black,
-                      child: VideoViewer(trimmer: _trimmer),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () async {
+                        try {
+                          final p = await _trimmer.videoPlaybackControl(
+                              startValue: _startValue, endValue: _endValue);
+                          if (mounted) setState(() => _isTrimPlaying = p);
+                        } catch (_) {}
+                      },
+                      child: Container(
+                        color: Colors.black,
+                        child: Stack(children: [
+                          VideoViewer(trimmer: _trimmer),
+                          if (!_isTrimPlaying)
+                            const Center(
+                              child: Icon(Icons.play_circle_outline,
+                                  color: Colors.white54, size: 64),
+                            ),
+                        ]),
+                      ),
                     ),
                     SizedBox.expand(
                       child: GestureDetector(
@@ -977,56 +996,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              // ── Preview button ───────────────────────────────────────────
-              // Plays the selected trim segment in the TrimViewer above so the
-              // user can review it before committing with Save.
-              GestureDetector(
-                onTap: () async {
-                  try {
-                    final p = await _trimmer.videoPlaybackControl(
-                        startValue: _startValue, endValue: _endValue);
-                    if (mounted) setState(() => _isTrimPlaying = p);
-                  } catch (_) {}
-                },
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: _isTrimPlaying
-                          ? Colors.white.withOpacity(0.7)
-                          : Colors.white.withOpacity(0.22),
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        _isTrimPlaying
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
-                        color: Colors.white,
-                        size: 15,
-                      ),
-                      const SizedBox(width: 5),
-                      Text(
-                        _isTrimPlaying ? 'Pause' : 'Preview',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
               // ── Save button ──────────────────────────────────────────────
               GestureDetector(
                 onTap: (_trimDirty && !_isSavingTrimInline) ? _saveTrim : null,
