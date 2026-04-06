@@ -106,10 +106,6 @@ class _SearchScreenState extends State<SearchScreen>
   Set<String> blockedUsersSet = {};
   bool _isLoading = true;
 
-  // ── A/B test: true = show view-count badges on post thumbnails ────────
-  bool _showViewCount = false;
-  // ──────────────────────────────────────────────────────────────────────
-
   // Pagination helpers
   int _offset = 0;
   bool _isLoadingMore = false;
@@ -136,14 +132,6 @@ class _SearchScreenState extends State<SearchScreen>
         ? _SearchDarkColors()
         : _SearchLightColors();
   }
-
-  // ========== FORMAT VIEW COUNT ==========
-  String _formatViewCount(int count) {
-    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
-    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
-    return count.toString();
-  }
-  // ========================================
 
   @override
   void initState() {
@@ -398,29 +386,9 @@ class _SearchScreenState extends State<SearchScreen>
     await Future.wait([
       _loadBlockedUsers(),
       _fetchPosts(),
-      _loadCurrentUserAbTest(), // ── load A/B flag ──
     ]);
     _rotateSuggestedUsers();
     setState(() => _isLoading = false);
-  }
-
-  // ── Reads `test` column from the logged-in user's row.
-  // true  → show view-count badge (treatment)
-  // false → hide badge (control)
-  Future<void> _loadCurrentUserAbTest() async {
-    if (currentUserId == null) return;
-    try {
-      final result = await _supabase
-          .from('users')
-          .select('test')
-          .eq('uid', currentUserId!)
-          .maybeSingle();
-      if (mounted) {
-        setState(() => _showViewCount = result?['test'] == true);
-      }
-    } catch (_) {
-      // On error keep _showViewCount = false (control group)
-    }
   }
 
   Future<void> _loadBlockedUsers() async {
@@ -1024,13 +992,10 @@ class _SearchScreenState extends State<SearchScreen>
     ]);
   }
 
-  // ========== POST ITEM — badge gated by _showViewCount ==========
   Widget _buildPostItem(Map<String, dynamic> post, String postUrl,
       _SearchColorSet colors, bool isTopPost) {
     final isVideo = _isVideoFile(postUrl);
     if (isVideo) _initializeVideoController(postUrl);
-
-    final int viewCount = (post['viewers_count'] as num?)?.toInt() ?? 0;
 
     return InkWell(
       onTap: () async {
@@ -1061,7 +1026,7 @@ class _SearchScreenState extends State<SearchScreen>
         ),
         clipBehavior: Clip.hardEdge,
         child: Stack(children: [
-          // ── media ─────────────────────────────────────────────────────
+          // ── media ──────────────────────────────────────────────────────
           if (postUrl.isNotEmpty)
             isVideo
                 ? _buildVideoPlayer(postUrl, colors)
@@ -1091,7 +1056,7 @@ class _SearchScreenState extends State<SearchScreen>
               child: Icon(Icons.broken_image, color: colors.iconColor),
             ),
 
-          // ── trophy badge (top posts) ───────────────────────────────────
+          // ── trophy badge (top posts) ────────────────────────────────────
           if (isTopPost)
             Positioned(
               top: 4,
@@ -1103,35 +1068,6 @@ class _SearchScreenState extends State<SearchScreen>
                     shape: BoxShape.circle),
                 child: const Icon(Icons.emoji_events,
                     color: Colors.amber, size: 16),
-              ),
-            ),
-
-          // ── view count badge — only for A/B treatment group ────────────
-          if (_showViewCount)
-            Positioned(
-              bottom: 4,
-              left: 4,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.visibility, size: 10, color: Colors.white),
-                    const SizedBox(width: 3),
-                    Text(
-                      _formatViewCount(viewCount),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 9,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
               ),
             ),
         ]),
