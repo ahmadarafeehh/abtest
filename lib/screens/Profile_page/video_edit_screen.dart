@@ -103,11 +103,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   double get _maxTrimMs => _isProfileFlow ? 5000.0 : 15000.0;
   Duration get _maxTrimDuration => Duration(milliseconds: _maxTrimMs.toInt());
 
-  // Full video duration used to show the entire timeline in TrimViewer.
-  // Falls back to 10 minutes if the controller is not yet ready.
-  Duration get _fullVideoDuration =>
-      _videoController?.value.duration ?? const Duration(minutes: 10);
-
   // ===========================================================================
   // LIFECYCLE
   // ===========================================================================
@@ -904,14 +899,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // ===========================================================================
 
   Widget _buildTrimDetail() {
-    // Pass the FULL video duration to TrimViewer so the entire timeline is
-    // rendered and scrollable. The 5-second (profile) / 15-second (post) cap
-    // is enforced purely through onChangeStart / onChangeEnd and _saveTrim —
-    // NOT through maxVideoLength, which was causing the trimmer to display
-    // only a small portion of longer videos.
-    final fullDuration =
-        _videoController?.value.duration ?? const Duration(minutes: 10);
-
+    // maxVideoLength caps both the displayed timeline and the selectable
+    // range to the allowed maximum:
+    //   • Profile flow → 5 s  (widget.onResult != null)
+    //   • Post flow    → 15 s (widget.onResult == null)
+    // The callbacks additionally clamp _endValue so the saved trim never
+    // exceeds the cap even if the package allows slight overshoot.
     return SingleChildScrollView(
       child: Column(children: [
         Padding(
@@ -920,9 +913,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             trimmer: _trimmer,
             viewerHeight: 70,
             viewerWidth: MediaQuery.of(context).size.width - 16,
-            // Show the full video timeline so the user can position the
-            // clip anywhere in the video. The max-trim cap is clamped below.
-            maxVideoLength: fullDuration,
+            maxVideoLength: _maxTrimDuration,
             editorProperties: TrimEditorProperties(
               circleSize: 12,
               borderWidth: 4,
@@ -934,14 +925,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             ),
             onChangeStart: (v) {
               _startValue = v;
-              // Clamp end so the selected window never exceeds the cap.
               if (_endValue - _startValue > _maxTrimMs) {
                 _endValue = _startValue + _maxTrimMs;
               }
               _trimDirty = true;
             },
             onChangeEnd: (v) {
-              // Clamp so the selected window never exceeds the cap.
               _endValue =
                   v > _startValue + _maxTrimMs ? _startValue + _maxTrimMs : v;
               _trimDirty = true;
