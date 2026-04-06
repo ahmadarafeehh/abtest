@@ -103,6 +103,15 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   double get _maxTrimMs => _isProfileFlow ? 5000.0 : 15000.0;
   Duration get _maxTrimDuration => Duration(milliseconds: _maxTrimMs.toInt());
 
+  // ── Selected-duration label ───────────────────────────────────────────────
+  // Shows the duration of the current trim selection (end − start), formatted
+  // as "X.Xs" with one decimal place.  Only meaningful once _trimDirty is set.
+  String get _selectedDurationLabel {
+    final ms = (_endValue - _startValue).clamp(0.0, _maxTrimMs);
+    final secs = ms / 1000.0;
+    return 'Selected: ${secs.toStringAsFixed(1)}s';
+  }
+
   // ===========================================================================
   // LIFECYCLE
   // ===========================================================================
@@ -951,11 +960,28 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             ),
           ),
         ),
+        // ── Selected-duration indicator ──────────────────────────────────────
+        // Appears as soon as the user has moved a trim handle so they can see
+        // how long the chosen segment is before committing with Save.
+        if (_trimDirty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              _selectedDurationLabel,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.55),
+                fontSize: 11,
+              ),
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
+              // ── Preview button ───────────────────────────────────────────
+              // Plays the selected trim segment in the TrimViewer above so the
+              // user can review it before committing with Save.
               GestureDetector(
                 onTap: () async {
                   try {
@@ -964,24 +990,44 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     if (mounted) setState(() => _isTrimPlaying = p);
                   } catch (_) {}
                 },
-                child: Container(
-                  width: 30,
-                  height: 30,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   decoration: BoxDecoration(
-                    shape: BoxShape.circle,
                     color: Colors.white.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
                     border: Border.all(
-                        color: Colors.white.withOpacity(0.28), width: 1),
+                      color: _isTrimPlaying
+                          ? Colors.white.withOpacity(0.7)
+                          : Colors.white.withOpacity(0.22),
+                      width: 1,
+                    ),
                   ),
-                  child: Icon(
-                    _isTrimPlaying
-                        ? Icons.pause_rounded
-                        : Icons.play_arrow_rounded,
-                    color: Colors.white,
-                    size: 15,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _isTrimPlaying
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                        color: Colors.white,
+                        size: 15,
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
+                        _isTrimPlaying ? 'Pause' : 'Preview',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
+              // ── Save button ──────────────────────────────────────────────
               GestureDetector(
                 onTap: (_trimDirty && !_isSavingTrimInline) ? _saveTrim : null,
                 child: AnimatedContainer(
