@@ -59,7 +59,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   double _endValue = 0.0;
   bool _isTrimPlaying = false;
   bool _isSavingTrimInline = false;
-  bool _trimDirty = false;
+  // Always start dirty so the Save button is enabled immediately.
+  bool _trimDirty = true;
   bool _trimApplied = false;
 
   bool _isProcessing = false;
@@ -104,8 +105,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   Duration get _maxTrimDuration => Duration(milliseconds: _maxTrimMs.toInt());
 
   // ── Selected-duration label ───────────────────────────────────────────────
-  // Shows the duration of the current trim selection (end − start), formatted
-  // as "X.Xs" with one decimal place.  Only meaningful once _trimDirty is set.
   String get _selectedDurationLabel {
     final ms = (_endValue - _startValue).clamp(0.0, _maxTrimMs);
     final secs = ms / 1000.0;
@@ -485,6 +484,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // ===========================================================================
 
   Future<void> _onNext() async {
+    // Guard against re-entrant calls (e.g. rapid double-taps on Done).
+    if (_isProcessing) return;
+    setState(() => _isProcessing = true);
+
     if (_trimDirty) {
       await _saveTrim();
       if (!mounted) return;
@@ -492,8 +495,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
 
     await _silenceAndStop();
     if (!mounted) return;
-
-    setState(() => _isProcessing = true);
 
     try {
       final result = VideoEditResult(
@@ -929,10 +930,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   Widget _buildTrimDetail() {
     return SingleChildScrollView(
       child: Column(children: [
-        // ── Header row: hints left, Save button right ────────────────────────
-        // Sits ABOVE the TrimViewer so the action button is always visible
-        // before the user touches the scrubber — follows the same
-        // "primary action top-right" convention as the global Next/Done bar.
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
           child: Row(
@@ -950,7 +947,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       fontSize: 11,
                     ),
                   ),
-                  if (_trimDirty) ...[
+                  if (_trimDirty && _endValue > _startValue) ...[
                     const SizedBox(height: 2),
                     Text(
                       _selectedDurationLabel,
@@ -963,15 +960,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ],
               ),
               GestureDetector(
-                onTap: (_trimDirty && !_isSavingTrimInline) ? _saveTrim : null,
+                onTap: _isSavingTrimInline ? null : _saveTrim,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
                   decoration: BoxDecoration(
-                    color: _trimDirty
-                        ? Colors.white
-                        : Colors.white.withOpacity(0.12),
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: _isSavingTrimInline
@@ -980,12 +975,10 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           height: 14,
                           child: CircularProgressIndicator(
                               color: Colors.black, strokeWidth: 2))
-                      : Text(
+                      : const Text(
                           'Save',
                           style: TextStyle(
-                            color: _trimDirty
-                                ? Colors.black
-                                : Colors.white.withOpacity(0.3),
+                            color: Colors.black,
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
@@ -995,7 +988,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             ],
           ),
         ),
-        // ── TrimViewer ───────────────────────────────────────────────────────
         Padding(
           padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
           child: TrimViewer(
