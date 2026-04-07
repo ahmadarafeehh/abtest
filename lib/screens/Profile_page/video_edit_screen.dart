@@ -927,16 +927,77 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   // ===========================================================================
 
   Widget _buildTrimDetail() {
-    // maxVideoLength caps both the displayed timeline and the selectable
-    // range to the allowed maximum:
-    //   • Profile flow → 5 s  (widget.onResult != null)
-    //   • Post flow    → 15 s (widget.onResult == null)
-    // The callbacks additionally clamp _endValue so the saved trim never
-    // exceeds the cap even if the package allows slight overshoot.
     return SingleChildScrollView(
       child: Column(children: [
+        // ── Header row: hints left, Save button right ────────────────────────
+        // Sits ABOVE the TrimViewer so the action button is always visible
+        // before the user touches the scrubber — follows the same
+        // "primary action top-right" convention as the global Next/Done bar.
         Padding(
-          padding: const EdgeInsets.only(top: 8, left: 8, right: 8),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Max clip: ${_maxTrimDuration.inSeconds}s',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.38),
+                      fontSize: 11,
+                    ),
+                  ),
+                  if (_trimDirty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      _selectedDurationLabel,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.55),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              GestureDetector(
+                onTap: (_trimDirty && !_isSavingTrimInline) ? _saveTrim : null,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: _trimDirty
+                        ? Colors.white
+                        : Colors.white.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: _isSavingTrimInline
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                              color: Colors.black, strokeWidth: 2))
+                      : Text(
+                          'Save',
+                          style: TextStyle(
+                            color: _trimDirty
+                                ? Colors.black
+                                : Colors.white.withOpacity(0.3),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        // ── TrimViewer ───────────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
           child: TrimViewer(
             trimmer: _trimmer,
             viewerHeight: 70,
@@ -966,68 +1027,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
             onChangePlaybackState: (p) {
               if (mounted) setState(() => _isTrimPlaying = p);
             },
-          ),
-        ),
-        // Inform the user of the maximum clip length for this flow.
-        Padding(
-          padding: const EdgeInsets.only(top: 4, bottom: 2),
-          child: Text(
-            'Max clip: ${_maxTrimDuration.inSeconds}s',
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.38),
-              fontSize: 11,
-            ),
-          ),
-        ),
-        // ── Selected-duration indicator ──────────────────────────────────────
-        // Appears as soon as the user has moved a trim handle so they can see
-        // how long the chosen segment is before committing with Save.
-        if (_trimDirty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Text(
-              _selectedDurationLabel,
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.55),
-                fontSize: 11,
-              ),
-            ),
-          ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              // ── Save button ──────────────────────────────────────────────
-              GestureDetector(
-                onTap: (_trimDirty && !_isSavingTrimInline) ? _saveTrim : null,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: _trimDirty
-                        ? Colors.white
-                        : Colors.white.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: _isSavingTrimInline
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(
-                              color: Colors.black, strokeWidth: 2))
-                      : Text('Save',
-                          style: TextStyle(
-                            color: _trimDirty
-                                ? Colors.black
-                                : Colors.white.withOpacity(0.3),
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          )),
-                ),
-              ),
-            ],
           ),
         ),
       ]),
