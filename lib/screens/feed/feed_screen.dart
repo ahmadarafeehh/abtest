@@ -266,6 +266,54 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
   }
 
   // ===========================================================================
+  // EDIT METADATA ENRICHMENT
+  // ===========================================================================
+
+  /// Backfills video_edit_metadata for video posts that the RPC did not return
+  /// it for. Uses a single batched SELECT so there is no N+1 overhead.
+  Future<List<Map<String, dynamic>>> _enrichPostsWithEditMetadata(
+      List<Map<String, dynamic>> posts) async {
+    // Collect IDs of video posts that are missing the metadata field.
+    final videoPostIds = posts
+        .where((p) {
+          final url = p['postUrl']?.toString() ?? '';
+          return _isVideoFile(url) && p['video_edit_metadata'] == null;
+        })
+        .map((p) => p['postId']?.toString())
+        .whereType<String>()
+        .where((id) => id.isNotEmpty)
+        .toList();
+
+    if (videoPostIds.isEmpty) return posts;
+
+    try {
+      final rows = await _supabase
+          .from('posts')
+          .select('postId, video_edit_metadata')
+          .inFilter('postId', videoPostIds);
+
+      // Build a lookup map: postId -> video_edit_metadata (may be null)
+      final metaMap = <String, dynamic>{};
+      for (final row in rows) {
+        final id = row['postId']?.toString() ?? '';
+        if (id.isNotEmpty) metaMap[id] = row['video_edit_metadata'];
+      }
+
+      // Merge metadata back into the post maps.
+      return posts.map((p) {
+        final id = p['postId']?.toString() ?? '';
+        if (metaMap.containsKey(id)) {
+          return <String, dynamic>{...p, 'video_edit_metadata': metaMap[id]};
+        }
+        return p;
+      }).toList();
+    } catch (_) {
+      // Degrade gracefully – posts still display, just without edit overlays.
+      return posts;
+    }
+  }
+
+  // ===========================================================================
   // MEDIA PRELOADING
   // ===========================================================================
 
@@ -846,7 +894,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           });
 
           if (_appStartTime != null) {
-            // Timing log removed
             _appStartTime = null;
           }
 
@@ -1235,7 +1282,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       });
       final res = _unwrapResponse(raw);
       if (res is List) {
-        return res.map<Map<String, dynamic>>((post) {
+        final rawPosts = res.map<Map<String, dynamic>>((post) {
           final m = <String, dynamic>{};
           (post as Map).forEach((k, v) {
             if (k.toString() == 'postScore') {
@@ -1247,6 +1294,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
           m['postId'] = m['postId']?.toString();
           return m;
         }).toList();
+        return await _enrichPostsWithEditMetadata(rawPosts);
       }
     } catch (e, stack) {
       // Ignore error
@@ -1326,6 +1374,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
       final excludedUsers = [..._blockedUsers, userId];
 
       if (_selectedTab == 0) {
+        // ── Following feed ──────────────────────────────────────────────
         if (_followingIds.isEmpty) {
           setState(() {
             _hasMoreFollowing = false;
@@ -1342,16 +1391,18 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         });
         final res = _unwrapResponse(raw);
         if (res is List) {
-          newPosts = res.map<Map<String, dynamic>>((post) {
+          final rawPosts = res.map<Map<String, dynamic>>((post) {
             final m = <String, dynamic>{};
             (post as Map).forEach((k, v) => m[k.toString()] = v);
             m['postId'] = m['postId']?.toString();
             return m;
           }).toList();
+          newPosts = await _enrichPostsWithEditMetadata(rawPosts);
         }
         _offsetFollowing += newPosts.length;
         _hasMoreFollowing = newPosts.isNotEmpty;
       } else {
+        // ── For You feed ────────────────────────────────────────────────
         final raw = await _supabase.rpc('get_for_you_feed', params: {
           'current_user_id': userId,
           'excluded_users': excludedUsers,
@@ -1360,7 +1411,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
         });
         final res = _unwrapResponse(raw);
         if (res is List) {
-          newPosts = res.map<Map<String, dynamic>>((post) {
+          final rawPosts = res.map<Map<String, dynamic>>((post) {
             final m = <String, dynamic>{};
             (post as Map).forEach((k, v) {
               if (k.toString() == 'postScore') {
@@ -1372,6 +1423,7 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
             m['postId'] = m['postId']?.toString();
             return m;
           }).toList();
+          newPosts = await _enrichPostsWithEditMetadata(rawPosts);
         }
         _offsetForYou += newPosts.length;
         _hasMoreForYou = newPosts.isNotEmpty;
@@ -1443,7 +1495,6 @@ class _FeedScreenState extends State<FeedScreen> with WidgetsBindingObserver {
               FeedCacheService.cacheCurrentPostsNow(toImmediateCache, userId));
         }
 
-        // Log first-post-from-network timing removed
         if (!loadMore &&
             _selectedTab == 1 &&
             _appStartTime != null &&
