@@ -449,6 +449,65 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
+  // ── Shared edit overlay layer (strokes + text) scaled to the preview cell ──
+  //
+  // Works entirely in preview-cell coordinates — no Transform/SizedBox
+  // overflow tricks. This matters for video thumbnails specifically: the old
+  // approach used Transform which does NOT change a widget's layout size, so
+  // the full-screen-sized SizedBox overflowed the tiny grid cell and Flutter's
+  // Stack clipped the painted content away before it could be seen.
+  //
+  // Strokes  — _ScaledDrawingPainter applies canvas.scale() so every authored
+  //             absolute-pixel point is drawn at the correct preview position.
+  // Text     — fractional (0–1) positions are multiplied by previewW/previewH
+  //             directly; fontSize is scaled by the smaller of the two axes so
+  //             text remains legible and proportional.
+  Widget _buildEditOverlayLayer(
+      VideoEditResult editResult, BoxConstraints constraints) {
+    if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final double previewW = constraints.maxWidth;
+    final double previewH = constraints.maxHeight;
+    final double screenW = MediaQuery.of(context).size.width;
+    final double screenH = MediaQuery.of(context).size.height;
+    final double scaleX = previewW / screenW;
+    final double scaleY = previewH / screenH;
+    // Scale font sizes by the smaller axis so text never overflows the cell.
+    final double fontScale = math.min(scaleX, scaleY);
+
+    return Stack(
+      clipBehavior: Clip.hardEdge,
+      children: [
+        // Strokes — canvas.scale() maps authored pixel coords into the cell.
+        if (editResult.strokes.isNotEmpty)
+          Positioned.fill(
+            child: CustomPaint(
+              painter: _ScaledDrawingPainter(
+                strokes: editResult.strokes,
+                scaleX: scaleX,
+                scaleY: scaleY,
+              ),
+            ),
+          ),
+        // Text overlays — fractional positions × preview dimensions give the
+        // correct pixel location inside the cell without any Transform at all.
+        ...editResult.overlays.map((o) {
+          final scaledOverlay = o.copyWith(fontSize: o.fontSize * fontScale);
+          return Positioned(
+            left: (o.position.dx * previewW).clamp(0.0, previewW - 10),
+            top: (o.position.dy * previewH).clamp(0.0, previewH - 10),
+            child: Stack(clipBehavior: Clip.none, children: [
+              Text(o.text, style: overlayShadowStyle(scaledOverlay)),
+              Text(o.text, style: overlayTextStyle(scaledOverlay)),
+            ]),
+          );
+        }),
+      ],
+    );
+  }
+
   // ── Post grid thumbnail video player — applies filter + rotation ─────────
   Widget _buildPostVideoPlayer(
       String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
@@ -484,73 +543,17 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ),
           ),
         ),
-        // Strokes + text overlays — both authored in full-screen space,
-        // so we measure the preview cell and apply a single uniform scale
-        // transform so that everything (stroke thickness, font size, and
-        // positions) shrinks proportionally to fill the thumbnail.
-        if (editResult != null &&
-            (editResult.strokes.isNotEmpty || editResult.overlays.isNotEmpty))
+        // Strokes + text overlays rendered via the shared helper so that
+        // both video and image thumbnails behave identically.
+        if (editResult != null)
           Positioned.fill(
             child: IgnorePointer(
               child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final double previewW = constraints.maxWidth;
-                  final double previewH = constraints.maxHeight;
-
-                  // The edit layer was authored at full-screen dimensions.
-                  final double screenW = MediaQuery.of(context).size.width;
-                  final double screenH = MediaQuery.of(context).size.height;
-
-                  final double scaleX = previewW / screenW;
-                  final double scaleY = previewH / screenH;
-
-                  return Transform(
-                    // Anchor the scale at the top-left so that authored
-                    // positions map directly to the same relative location
-                    // in the preview cell.
-                    transform:
-                        Matrix4.diagonal3Values(scaleX, scaleY, 1.0),
-                    alignment: Alignment.topLeft,
-                    child: SizedBox(
-                      width: screenW,
-                      height: screenH,
-                      child: Stack(
-                        children: [
-                          // Drawing strokes — points are in full-screen
-                          // coordinates; the parent transform scales them.
-                          if (editResult.strokes.isNotEmpty)
-                            Positioned.fill(
-                              child: CustomPaint(
-                                painter: DrawingPainter(
-                                  strokes: editResult.strokes,
-                                  currentStroke: null,
-                                ),
-                              ),
-                            ),
-                          // Text overlays — normalised (0–1) positions
-                          // multiplied back to screen dimensions here; the
-                          // parent transform then scales the whole layer.
-                          ...editResult.overlays.map((o) {
-                            return Positioned(
-                              left: (o.position.dx * screenW)
-                                  .clamp(0.0, screenW - 10),
-                              top: (o.position.dy * screenH)
-                                  .clamp(0.0, screenH - 10),
-                              child: Stack(clipBehavior: Clip.none, children: [
-                                Text(o.text, style: overlayShadowStyle(o)),
-                                Text(o.text, style: overlayTextStyle(o)),
-                              ]),
-                            );
-                          }),
-                        ],
-                      ),
-                    ),
-                  );
-                },
+                builder: (context, constraints) =>
+                    _buildEditOverlayLayer(editResult, constraints),
               ),
             ),
           ),
-        // Video indicator icon intentionally removed.
       ]),
     );
   }
@@ -1258,49 +1261,67 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ── Static image thumbnail — applies filter + rotation if present ─────────
+  // ── Static image thumbnail — applies filter, rotation, strokes + text ────
+  //
+  // Previously this method only handled filter and rotation; strokes and text
+  // overlays were never rendered, causing a mismatch with the full-screen view.
   Widget _buildPostImage(Map<String, dynamic> post, _ColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final editResult = _parseEditResult(post);
     final List<double> matrix = _buildColorMatrix(editResult);
     final int quarters = editResult?.rotationQuarters ?? 0;
 
-    Widget image = ClipRRect(
+    // Base image, wrapped with filter + rotation when edit data is present.
+    Widget baseImage = ClipRRect(
       borderRadius: BorderRadius.circular(4),
-      child: Image.network(
-        postUrl,
-        fit: BoxFit.cover,
-        width: double.infinity,
-        height: double.infinity,
-        errorBuilder: (_, __, ___) => Container(
-          color: colors.cardColor,
-          child: Icon(Icons.broken_image, color: colors.iconColor, size: 20),
-        ),
-      ),
+      child: editResult == null
+          ? Image.network(
+              postUrl,
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              errorBuilder: (_, __, ___) => Container(
+                color: colors.cardColor,
+                child:
+                    Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+              ),
+            )
+          : ColorFiltered(
+              colorFilter: ColorFilter.matrix(matrix),
+              child: Transform.rotate(
+                angle: quarters * math.pi / 2,
+                child: Image.network(
+                  postUrl,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: colors.cardColor,
+                    child: Icon(Icons.broken_image,
+                        color: colors.iconColor, size: 20),
+                  ),
+                ),
+              ),
+            ),
     );
 
-    // Only wrap with transforms when there is actual edit data
-    if (editResult == null) return image;
+    // No edit data — return the plain image immediately.
+    if (editResult == null) return baseImage;
 
+    // Compose the base image with the overlay layer (strokes + text).
     return ClipRRect(
       borderRadius: BorderRadius.circular(4),
-      child: ColorFiltered(
-        colorFilter: ColorFilter.matrix(matrix),
-        child: Transform.rotate(
-          angle: quarters * math.pi / 2,
-          child: Image.network(
-            postUrl,
-            fit: BoxFit.cover,
-            width: double.infinity,
-            height: double.infinity,
-            errorBuilder: (_, __, ___) => Container(
-              color: colors.cardColor,
-              child:
-                  Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+      child: Stack(fit: StackFit.expand, children: [
+        Positioned.fill(child: baseImage),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: LayoutBuilder(
+              builder: (context, constraints) =>
+                  _buildEditOverlayLayer(editResult, constraints),
             ),
           ),
         ),
-      ),
+      ]),
     );
   }
 
@@ -1693,4 +1714,46 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       ),
     );
   }
+}
+
+// =============================================================================
+// SCALED DRAWING PAINTER
+// =============================================================================
+//
+// Applies canvas.scale(scaleX, scaleY) before delegating to DrawingPainter so
+// that stroke points authored in the full-screen video-editor space are painted
+// at the correct proportional location inside the much-smaller preview cell.
+//
+// Using canvas transforms here is the only reliable approach: wrapping a
+// DrawingPainter in a Transform widget changes the *visual* output but not
+// the widget's *layout size*, which caused the overlay layer to overflow its
+// Positioned.fill bounds and get clipped away entirely by the parent Stack.
+
+class _ScaledDrawingPainter extends CustomPainter {
+  final List<DrawStroke> strokes;
+  final double scaleX;
+  final double scaleY;
+
+  const _ScaledDrawingPainter({
+    required this.strokes,
+    required this.scaleX,
+    required this.scaleY,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.scale(scaleX, scaleY);
+    // Paint strokes in the original authored coordinate space; the canvas
+    // transform above maps them into the preview cell automatically.
+    DrawingPainter(strokes: strokes, currentStroke: null)
+        .paint(canvas, Size(size.width / scaleX, size.height / scaleY));
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_ScaledDrawingPainter old) =>
+      old.strokes != strokes ||
+      old.scaleX != scaleX ||
+      old.scaleY != scaleY;
 }
