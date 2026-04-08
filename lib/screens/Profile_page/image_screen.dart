@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
-import 'package:Ratedly/services/ads.dart';
+import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/resources/supabase_posts_methods.dart';
 import 'package:Ratedly/screens/comment_screen.dart';
@@ -19,8 +22,11 @@ import 'package:timeago/timeago.dart' as timeago;
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
+import 'package:Ratedly/services/ads.dart';
+import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
+import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 
-// Video Manager to ensure only one video plays at a time
+// ── VideoManager ─────────────────────────────────────────────────────────────
 class VideoManager {
   static final VideoManager _instance = VideoManager._internal();
   factory VideoManager() => _instance;
@@ -34,7 +40,6 @@ class VideoManager {
         _currentPlayingController != controller) {
       _currentPlayingController!.pause();
     }
-
     _currentPlayingController = controller;
     _currentPostId = postId;
     controller.play();
@@ -57,9 +62,8 @@ class VideoManager {
     controller.dispose();
   }
 
-  bool isCurrentlyPlaying(VideoPlayerController controller) {
-    return _currentPlayingController == controller;
-  }
+  bool isCurrentlyPlaying(VideoPlayerController controller) =>
+      _currentPlayingController == controller;
 
   void onPostInvisible(String postId) {
     if (_currentPostId == postId && _currentPlayingController != null) {
@@ -80,7 +84,7 @@ class VideoManager {
   }
 }
 
-// Define color schemes for both themes at top level
+// ── Color schemes ─────────────────────────────────────────────────────────────
 class _ImageViewColorSet {
   final Color backgroundColor;
   final Color textColor;
@@ -262,7 +266,6 @@ class _FollowBadgeState extends State<_FollowBadge>
           _scaleController.forward(from: 0.0);
         }
       } else {
-        // Optimistic: show tick immediately
         setState(() => _isFollowing = true);
         _tickController.forward(from: 0.0).then((_) {
           if (mounted) {
@@ -271,7 +274,6 @@ class _FollowBadgeState extends State<_FollowBadge>
             });
           }
         });
-
         SupabaseProfileMethods()
             .followUser(widget.currentUserId, widget.ownerUid)
             .then((_) async {
@@ -360,8 +362,6 @@ class _FollowBadgeState extends State<_FollowBadge>
   }
 }
 
-/// Stacks an avatar widget + TikTok follow badge.
-/// Badge centre sits on the bottom edge of the avatar circle.
 Widget _buildAvatarWithFollow({
   required Widget avatar,
   required double avatarDiameter,
@@ -386,8 +386,8 @@ Widget _buildAvatarWithFollow({
     ),
   );
 }
-// ─────────────────────────────────────────────────────────────────────────────
 
+// ── ImageViewScreen ───────────────────────────────────────────────────────────
 class ImageViewScreen extends StatefulWidget {
   final String imageUrl;
   final String postId;
@@ -397,6 +397,11 @@ class ImageViewScreen extends StatefulWidget {
   final String profImage;
   final dynamic datePublished;
   final VoidCallback? onPostDeleted;
+
+  /// Optional: the raw video_edit_metadata map from the post record.
+  /// When present, _buildVideoPlayer will reconstruct the creator's exact
+  /// filter, rotation, draw strokes, and text overlays for every viewer.
+  final Map<String, dynamic>? videoEditMetadata;
 
   const ImageViewScreen({
     Key? key,
@@ -408,6 +413,7 @@ class ImageViewScreen extends StatefulWidget {
     required this.profImage,
     required this.datePublished,
     this.onPostDeleted,
+    this.videoEditMetadata,
   }) : super(key: key);
 
   @override
@@ -426,31 +432,29 @@ class _ImageViewScreenState extends State<ImageViewScreen>
   BannerAd? _bannerAd;
   bool _isAdLoaded = false;
 
-  // Rating state variables
   double _averageRating = 0.0;
   int _totalRatingsCount = 0;
   double? _userRating;
   bool _isLoadingRatings = true;
   late RealtimeChannel _postChannel;
 
-  // Comment realtime channels
   late RealtimeChannel _commentsChannel;
   late RealtimeChannel _repliesChannel;
 
-  // Main post video player variables
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
   bool _isVideoLoading = false;
   bool _isMuted = false;
   final VideoManager _videoManager = VideoManager();
 
-  // Video player for profile picture
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = true;
 
-  // Local ratings list
   late List<Map<String, dynamic>> _localRatings;
+
+  // Parsed once from widget.videoEditMetadata in initState.
+  VideoEditResult? _editResult;
 
   final List<String> reportReasons = [
     'I just don\'t like it',
@@ -500,6 +504,17 @@ class _ImageViewScreenState extends State<ImageViewScreen>
 
     _localRatings = [];
     _commentCount = 0;
+
+    // Parse video_edit_metadata once so _buildVideoPlayer can use it without
+    // re-parsing on every rebuild. File('') is safe — viewer path never
+    // accesses videoFile.
+    if (widget.videoEditMetadata != null) {
+      try {
+        _editResult =
+            VideoEditResult.fromJson(widget.videoEditMetadata!, File(''));
+      } catch (_) {}
+    }
+
     _fetchCommentsCount();
     _checkBlockStatus();
     _setupRealtime();
@@ -526,7 +541,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     }
   }
 
-  // ========== PROFILE VIDEO HANDLING ==========
+  // ── Profile video ──────────────────────────────────────────────────────────
   Future<void> _initializeProfileVideo() async {
     if (_profileVideoController != null) {
       await _profileVideoController!.dispose();
@@ -539,9 +554,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     try {
       final controller = VideoPlayerController.networkUrl(
         Uri.parse(widget.profImage),
-        videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: true,
-        ),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
 
       await controller.initialize();
@@ -558,9 +571,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _isProfileVideoInitialized = false;
-        });
+        setState(() => _isProfileVideoInitialized = false);
       }
     }
   }
@@ -573,9 +584,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
           color: colors.avatarBackgroundColor,
         ),
         child: Center(
-          child: CircularProgressIndicator(
-            color: colors.progressIndicatorColor,
-          ),
+          child:
+              CircularProgressIndicator(color: colors.progressIndicatorColor),
         ),
       );
     }
@@ -611,8 +621,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
       } catch (e) {}
     }
   }
-  // ============================================
 
+  // ── Comments realtime ──────────────────────────────────────────────────────
   void _setupCommentsRealtime() {
     _commentsChannel =
         Supabase.instance.client.channel('comments_${widget.postId}');
@@ -625,9 +635,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         column: 'postid',
         value: widget.postId,
       ),
-      callback: (payload) {
-        _fetchCommentsCount();
-      },
+      callback: (payload) => _fetchCommentsCount(),
     );
 
     _repliesChannel =
@@ -641,9 +649,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         column: 'postid',
         value: widget.postId,
       ),
-      callback: (payload) {
-        _fetchCommentsCount();
-      },
+      callback: (payload) => _fetchCommentsCount(),
     );
 
     _commentsChannel.subscribe();
@@ -652,20 +658,16 @@ class _ImageViewScreenState extends State<ImageViewScreen>
 
   Future<void> _recordView() async {
     if (_viewRecorded) return;
-
     final user = Provider.of<UserProvider>(context, listen: false).user;
     if (user != null) {
-      await _postsMethods.recordPostView(
-        widget.postId,
-        user.uid,
-      );
+      await _postsMethods.recordPostView(widget.postId, user.uid);
       if (mounted) setState(() => _viewRecorded = true);
     }
   }
 
+  // ── Ratings realtime ───────────────────────────────────────────────────────
   void _setupRealtime() {
     _postChannel = Supabase.instance.client.channel('post_${widget.postId}');
-
     _postChannel.onPostgresChanges(
       event: PostgresChangeEvent.all,
       schema: 'public',
@@ -675,11 +677,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         column: 'postid',
         value: widget.postId,
       ),
-      callback: (payload) {
-        _handleRatingUpdate(payload);
-      },
+      callback: (payload) => _handleRatingUpdate(payload),
     );
-
     _postChannel.subscribe();
   }
 
@@ -695,7 +694,6 @@ class _ImageViewScreenState extends State<ImageViewScreen>
             _localRatings.insert(0, newRecord);
             _totalRatingsCount++;
             _updateAverageRating();
-
             final user = Provider.of<UserProvider>(context, listen: false).user;
             if (user != null && newRecord['userid'] == user.uid) {
               _showSlider = false;
@@ -705,12 +703,10 @@ class _ImageViewScreenState extends State<ImageViewScreen>
           break;
         case PostgresChangeEvent.update:
           if (oldRecord != null && newRecord != null) {
-            final index = _localRatings.indexWhere(
-              (r) => r['userid'] == oldRecord['userid'],
-            );
+            final index = _localRatings
+                .indexWhere((r) => r['userid'] == oldRecord['userid']);
             if (index != -1) _localRatings[index] = newRecord;
             _updateAverageRating();
-
             final user = Provider.of<UserProvider>(context, listen: false).user;
             if (user != null && newRecord['userid'] == user.uid) {
               _userRating = (newRecord['rating'] as num).toDouble();
@@ -719,12 +715,10 @@ class _ImageViewScreenState extends State<ImageViewScreen>
           break;
         case PostgresChangeEvent.delete:
           if (oldRecord != null) {
-            _localRatings.removeWhere(
-              (r) => r['userid'] == oldRecord['userid'],
-            );
+            _localRatings
+                .removeWhere((r) => r['userid'] == oldRecord['userid']);
             _totalRatingsCount--;
             _updateAverageRating();
-
             final user = Provider.of<UserProvider>(context, listen: false).user;
             if (user != null && oldRecord['userid'] == user.uid) {
               _showSlider = true;
@@ -743,16 +737,13 @@ class _ImageViewScreenState extends State<ImageViewScreen>
       setState(() => _averageRating = 0.0);
       return;
     }
-
     final total = _localRatings.fold(
         0.0, (sum, r) => sum + (r['rating'] as num).toDouble());
-
     setState(() => _averageRating = total / _localRatings.length);
   }
 
   Future<void> _fetchInitialRatings() async {
     setState(() => _isLoadingRatings = true);
-
     try {
       final countResponse = await Supabase.instance.client
           .from('post_rating')
@@ -809,9 +800,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _isLoadingRatings = false);
-      }
+      if (mounted) setState(() => _isLoadingRatings = false);
     }
   }
 
@@ -825,9 +814,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     setState(() {
       _userRating = rating;
       _showSlider = false;
-
       final currentTotalRating = _averageRating * _totalRatingsCount;
-
       if (isUpdatingExistingRating) {
         final newTotal = currentTotalRating - oldUserRating! + rating;
         _averageRating = newTotal / _totalRatingsCount;
@@ -836,11 +823,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         _totalRatingsCount++;
         _averageRating = newTotal / _totalRatingsCount;
       }
-
-      final userRatingIndex = _localRatings.indexWhere(
-        (r) => r['userid'] == user.uid,
-      );
-
+      final userRatingIndex =
+          _localRatings.indexWhere((r) => r['userid'] == user.uid);
       if (userRatingIndex != -1) {
         _localRatings[userRatingIndex]['rating'] = rating;
         _localRatings[userRatingIndex]['timestamp'] =
@@ -856,79 +840,55 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     });
 
     try {
-      final success = await _postsMethods.ratePost(
-        widget.postId,
-        user.uid,
-        rating,
-      );
-
-      if (success != 'success' && mounted) {
-        _fetchInitialRatings();
-      }
+      final success =
+          await _postsMethods.ratePost(widget.postId, user.uid, rating);
+      if (success != 'success' && mounted) _fetchInitialRatings();
     } catch (e) {
-      if (mounted) {
-        _fetchInitialRatings();
-      }
+      if (mounted) _fetchInitialRatings();
     }
   }
 
-  void _handleEditRating() {
-    setState(() {
-      _showSlider = true;
-    });
-  }
+  void _handleEditRating() => setState(() => _showSlider = true);
 
+  // ── Main video player ──────────────────────────────────────────────────────
   void _initializeVideoPlayer() async {
     if (_isVideoLoading || _isVideoInitialized) return;
-
     setState(() => _isVideoLoading = true);
-
     try {
       _videoController = VideoPlayerController.networkUrl(
         Uri.parse(widget.imageUrl),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
       );
-
       _videoController!.addListener(_videoListener);
-
       await _videoController!.initialize();
       _videoController!.setLooping(true);
-
       if (mounted) {
         setState(() {
           _isVideoInitialized = true;
           _isVideoLoading = false;
         });
-
         _playVideo();
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _isVideoLoading = false);
-      }
+      if (mounted) setState(() => _isVideoLoading = false);
     }
   }
 
   void _videoListener() {
     if (!mounted) return;
-
     final wasPlaying = _isVideoPlaying;
     final isNowPlaying = _videoController?.value.isPlaying ?? false;
-
     if (wasPlaying != isNowPlaying) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         setState(() {});
       });
     }
-
     if (_videoController != null &&
         _videoController!.value.position == _videoController!.value.duration &&
         _videoController!.value.duration != Duration.zero) {
       _videoController!.seekTo(Duration.zero);
-      if (!_isVideoPlaying) {
-        _playVideo();
-      }
+      if (!_isVideoPlaying) _playVideo();
     }
   }
 
@@ -1002,9 +962,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
             _isAdLoaded = true;
           });
         },
-        onAdFailedToLoad: (ad, err) {
-          ad.dispose();
-        },
+        onAdFailedToLoad: (ad, err) => ad.dispose(),
       ),
     ).load();
   }
@@ -1038,39 +996,23 @@ class _ImageViewScreenState extends State<ImageViewScreen>
           .from('comments')
           .select('id')
           .eq('postid', widget.postId);
-
       final repliesResponse = await Supabase.instance.client
           .from('replies')
           .select('id')
           .eq('postid', widget.postId);
-
-      final int commentsCount = _countItems(commentsResponse);
-      final int repliesCount = _countItems(repliesResponse);
-      final int totalCount = commentsCount + repliesCount;
-
-      if (mounted) {
-        setState(() {
-          _commentCount = totalCount;
-        });
-      }
+      final int total =
+          _countItems(commentsResponse) + _countItems(repliesResponse);
+      if (mounted) setState(() => _commentCount = total);
     } catch (err) {
-      if (mounted) {
-        setState(() {
-          _commentCount = 0;
-        });
-      }
+      if (mounted) setState(() => _commentCount = 0);
     }
   }
 
   Future<void> _checkBlockStatus() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
     if (user == null) return;
-
-    final isBlocked = await SupabaseBlockMethods().isMutuallyBlocked(
-      user.uid,
-      widget.userId,
-    );
-
+    final isBlocked =
+        await SupabaseBlockMethods().isMutuallyBlocked(user.uid, widget.userId);
     if (mounted) setState(() => _isBlocked = isBlocked);
   }
 
@@ -1093,16 +1035,11 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   CircularProgressIndicator(
-                    color: colors.progressIndicatorColor,
-                  ),
+                      color: colors.progressIndicatorColor),
                   const SizedBox(height: 16),
-                  Text(
-                    'Deleting post...',
-                    style: TextStyle(
-                      color: colors.dialogTextColor,
-                      fontSize: 16,
-                    ),
-                  ),
+                  Text('Deleting post...',
+                      style: TextStyle(
+                          color: colors.dialogTextColor, fontSize: 16)),
                 ],
               ),
             ),
@@ -1113,7 +1050,6 @@ class _ImageViewScreenState extends State<ImageViewScreen>
 
     try {
       await _postsMethods.deletePost(postId);
-
       if (mounted) {
         Navigator.of(context).pop();
         widget.onPostDeleted?.call();
@@ -1143,18 +1079,15 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Thank you for helping keep our community safe.\n\nPlease let us know the reason for reporting this content. Your report is anonymous, and our moderators will review it as soon as possible. \n\n If you prefer not to see this user posts or content, you can choose to block them.',
+                      'Thank you for helping keep our community safe.\n\nPlease let us know the reason for reporting this content. Your report is anonymous, and our moderators will review it as soon as possible.\n\nIf you prefer not to see this user\'s posts, you can choose to block them.',
                       style: TextStyle(
                           color: colors.dialogTextColor, fontSize: 14),
                     ),
                     const SizedBox(height: 16),
-                    Text(
-                      'Select a reason: \n',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: colors.dialogTextColor,
-                      ),
-                    ),
+                    Text('Select a reason:\n',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: colors.dialogTextColor)),
                     ...reportReasons.map((reason) {
                       return RadioListTile<String>(
                         title: Text(reason,
@@ -1162,9 +1095,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                         value: reason,
                         groupValue: selectedReason,
                         activeColor: colors.radioActiveColor,
-                        onChanged: (value) {
-                          setState(() => selectedReason = value);
-                        },
+                        onChanged: (value) =>
+                            setState(() => selectedReason = value),
                       );
                     }).toList(),
                   ],
@@ -1219,10 +1151,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
             left: -6,
             child: Container(
               padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(
-                minWidth: 20,
-                minHeight: 20,
-              ),
+              constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
               decoration: BoxDecoration(
                 color: colors.badgeBackgroundColor,
                 shape: BoxShape.circle,
@@ -1231,10 +1160,9 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                 child: Text(
                   _commentCount.toString(),
                   style: TextStyle(
-                    color: colors.badgeTextColor,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
+                      color: colors.badgeTextColor,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold),
                 ),
               ),
             ),
@@ -1251,22 +1179,40 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     }
   }
 
+  // ── VIDEO PLAYER — applies filter, rotation, draw strokes, text overlays ──
   Widget _buildVideoPlayer(_ImageViewColorSet colors) {
+    final VideoEditResult? er = _editResult;
+
+    // Combined colour matrix: filter preset × adjustment sliders.
+    // Identity (passthrough) when no edit metadata.
+    final List<double> matrix = er != null
+        ? er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix)
+        : [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+
+    final int quarters = er?.rotationQuarters ?? 0;
+
     return AspectRatio(
       aspectRatio:
           _isVideoInitialized ? _videoController!.value.aspectRatio : 1,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(
-          maxHeight: 600,
-        ),
+        constraints: const BoxConstraints(maxHeight: 600),
         child: GestureDetector(
           onTap: _toggleVideoPlayback,
           child: Stack(
             fit: StackFit.expand,
             children: [
+              // ── Base black backing ────────────────────────────────────
               Container(color: Colors.black),
+
+              // ── Video with colour filter + rotation ───────────────────
               if (_isVideoInitialized)
-                VideoPlayer(_videoController!)
+                ColorFiltered(
+                  colorFilter: ColorFilter.matrix(matrix),
+                  child: Transform.rotate(
+                    angle: quarters * math.pi / 2,
+                    child: VideoPlayer(_videoController!),
+                  ),
+                )
               else if (_isVideoLoading)
                 Container(
                   color: Colors.black,
@@ -1279,11 +1225,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                         color: Colors.grey[800]!.withOpacity(0.8),
                         shape: BoxShape.circle,
                       ),
-                      child: Icon(
-                        Icons.videocam,
-                        color: Colors.grey[300]!,
-                        size: 24,
-                      ),
+                      child: Icon(Icons.videocam,
+                          color: Colors.grey[300]!, size: 24),
                     ),
                   ),
                 )
@@ -1297,14 +1240,52 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                         Icon(Icons.videocam,
                             size: 50, color: colors.errorIconColor),
                         const SizedBox(height: 8),
-                        Text(
-                          'Video not available',
-                          style: TextStyle(color: colors.errorIconColor),
-                        ),
+                        Text('Video not available',
+                            style: TextStyle(color: colors.errorIconColor)),
                       ],
                     ),
                   ),
                 ),
+
+              // ── Draw strokes overlay ──────────────────────────────────
+              if (er != null && er.strokes.isNotEmpty)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: CustomPaint(
+                      painter: DrawingPainter(
+                        strokes: er.strokes,
+                        currentStroke: null,
+                      ),
+                    ),
+                  ),
+                ),
+
+              // ── Text overlays ─────────────────────────────────────────
+              if (er != null && er.overlays.isNotEmpty)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final double w = constraints.maxWidth;
+                        final double h = constraints.maxHeight;
+                        return Stack(
+                          children: er.overlays.map((o) {
+                            return Positioned(
+                              left: (o.position.dx * w).clamp(0.0, w - 10),
+                              top: (o.position.dy * h).clamp(0.0, h - 10),
+                              child: Stack(clipBehavior: Clip.none, children: [
+                                Text(o.text, style: overlayShadowStyle(o)),
+                                Text(o.text, style: overlayTextStyle(o)),
+                              ]),
+                            );
+                          }).toList(),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+
+              // ── Mute button ───────────────────────────────────────────
               if (_isVideoInitialized)
                 Positioned(
                   bottom: 16,
@@ -1315,14 +1296,9 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                       width: 36,
                       height: 36,
                       decoration: const BoxDecoration(
-                        color: Colors.black54,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        _isMuted ? Icons.volume_off : Icons.volume_up,
-                        size: 20,
-                        color: Colors.white,
-                      ),
+                          color: Colors.black54, shape: BoxShape.circle),
+                      child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up,
+                          size: 20, color: Colors.white),
                     ),
                   ),
                 ),
@@ -1335,44 +1311,41 @@ class _ImageViewScreenState extends State<ImageViewScreen>
 
   Widget _buildImage(_ImageViewColorSet colors) {
     return AspectRatio(
-        aspectRatio: 1,
-        child: InteractiveViewer(
-          panEnabled: true,
-          scaleEnabled: true,
-          minScale: 1.0,
-          maxScale: 4.0,
-          child: Image.network(
-            widget.imageUrl,
-            fit: BoxFit.cover,
-            width: double.infinity,
-            loadingBuilder: (context, child, loadingProgress) {
-              if (loadingProgress == null) return child;
-              return SizedBox(
-                width: double.infinity,
-                height: 250,
-                child: Center(
-                  child: Container(
-                    color: colors.backgroundColor.withOpacity(0.1),
-                  ),
-                ),
-              );
-            },
-            errorBuilder: (context, error, stackTrace) => SizedBox(
+      aspectRatio: 1,
+      child: InteractiveViewer(
+        panEnabled: true,
+        scaleEnabled: true,
+        minScale: 1.0,
+        maxScale: 4.0,
+        child: Image.network(
+          widget.imageUrl,
+          fit: BoxFit.cover,
+          width: double.infinity,
+          loadingBuilder: (context, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return SizedBox(
               width: double.infinity,
               height: 250,
               child: Center(
+                  child: Container(
+                      color: colors.backgroundColor.withOpacity(0.1))),
+            );
+          },
+          errorBuilder: (context, error, stackTrace) => SizedBox(
+            width: double.infinity,
+            height: 250,
+            child: Center(
                 child: Icon(Icons.broken_image,
-                    color: colors.errorIconColor, size: 48),
-              ),
-            ),
+                    color: colors.errorIconColor, size: 48)),
           ),
-        ));
+        ),
+      ),
+    );
   }
 
   void _navigateToComments(_ImageViewColorSet colors) {
     _pauseVideo();
     _pauseProfileVideo();
-
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1381,14 +1354,10 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         postId: widget.postId,
         postImage: widget.imageUrl,
         isVideo: _isVideo,
-        onClose: () {
-          _resumeProfileVideo();
-        },
+        onClose: () => _resumeProfileVideo(),
         videoController: _videoController,
       ),
-    ).then((_) {
-      _fetchCommentsCount();
-    });
+    ).then((_) => _fetchCommentsCount());
   }
 
   Widget _buildRatingSummary(_ImageViewColorSet colors) {
@@ -1407,10 +1376,9 @@ class _ImageViewScreenState extends State<ImageViewScreen>
           : Text(
               'Rated ${_averageRating.toStringAsFixed(1)} by $_totalRatingsCount ${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
               style: TextStyle(
-                fontSize: 14,
-                color: colors.textColor,
-                fontWeight: FontWeight.w500,
-              ),
+                  fontSize: 14,
+                  color: colors.textColor,
+                  fontWeight: FontWeight.w500),
             ),
     );
 
@@ -1422,10 +1390,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => RatingListScreen(
-                postId: widget.postId,
-              ),
-            ),
+                builder: (context) => RatingListScreen(postId: widget.postId)),
           );
         },
         child: containerContent,
@@ -1443,28 +1408,19 @@ class _ImageViewScreenState extends State<ImageViewScreen>
       return CircleAvatar(
         radius: 21,
         backgroundColor: colors.avatarBackgroundColor,
-        child: Icon(
-          Icons.account_circle,
-          size: 42,
-          color: colors.errorIconColor,
-        ),
+        child:
+            Icon(Icons.account_circle, size: 42, color: colors.errorIconColor),
       );
     }
 
-    if (isVideo) {
-      return _buildProfileVideoPlayer(colors);
-    }
+    if (isVideo) return _buildProfileVideoPlayer(colors);
 
     return CircleAvatar(
       radius: 21,
       backgroundColor: colors.avatarBackgroundColor,
       backgroundImage: NetworkImage(widget.profImage),
-      child: widget.profImage.isEmpty || widget.profImage == "default"
-          ? Icon(
-              Icons.account_circle,
-              size: 42,
-              color: colors.errorIconColor,
-            )
+      child: (widget.profImage.isEmpty || widget.profImage == 'default')
+          ? Icon(Icons.account_circle, size: 42, color: colors.errorIconColor)
           : null,
     );
   }
@@ -1482,10 +1438,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
     if (user == null) {
       return Scaffold(
         body: Center(
-          child: CircularProgressIndicator(
-            color: colors.progressIndicatorColor,
-          ),
-        ),
+            child: CircularProgressIndicator(
+                color: colors.progressIndicatorColor)),
       );
     }
 
@@ -1496,8 +1450,7 @@ class _ImageViewScreenState extends State<ImageViewScreen>
           iconTheme: IconThemeData(color: colors.appBarIconColor),
         ),
         body: const BlockedContentMessage(
-          message: 'Post unavailable due to blocking',
-        ),
+            message: 'Post unavailable due to blocking'),
       );
     }
 
@@ -1508,10 +1461,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
         title: VerifiedUsernameWidget(
           username: widget.username,
           uid: widget.userId,
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: colors.textColor,
-          ),
+          style:
+              TextStyle(fontWeight: FontWeight.bold, color: colors.textColor),
         ),
         centerTitle: true,
         leading: IconButton(
@@ -1538,15 +1489,12 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                             child: Row(
                               children: [
                                 CircularProgressIndicator(
-                                  color: colors.progressIndicatorColor,
-                                  strokeWidth: 2,
-                                ),
+                                    color: colors.progressIndicatorColor,
+                                    strokeWidth: 2),
                                 const SizedBox(width: 16),
-                                Text(
-                                  'Deleting...',
-                                  style:
-                                      TextStyle(color: colors.dialogTextColor),
-                                ),
+                                Text('Deleting...',
+                                    style: TextStyle(
+                                        color: colors.dialogTextColor)),
                               ],
                             ),
                           )
@@ -1556,10 +1504,9 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                             child: Container(
                               padding: const EdgeInsets.symmetric(
                                   vertical: 12, horizontal: 16),
-                              child: Text(
-                                'Delete',
-                                style: TextStyle(color: colors.dialogTextColor),
-                              ),
+                              child: Text('Delete',
+                                  style:
+                                      TextStyle(color: colors.dialogTextColor)),
                             ),
                           ),
                       ],
@@ -1582,7 +1529,6 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                   .copyWith(right: 0),
               child: Row(
                 children: [
-                  // ── Avatar + TikTok follow badge ──────────────────────────
                   GestureDetector(
                     onTap: () {
                       _pauseVideo();
@@ -1590,9 +1536,8 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) =>
-                              ProfileScreen(uid: widget.userId),
-                        ),
+                            builder: (context) =>
+                                ProfileScreen(uid: widget.userId)),
                       );
                     },
                     child: _buildAvatarWithFollow(
@@ -1602,7 +1547,6 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                       currentUserId: user.uid,
                     ),
                   ),
-                  // ─────────────────────────────────────────────────────────
                   Expanded(
                     child: Padding(
                       padding: const EdgeInsets.only(left: 12),
@@ -1616,27 +1560,24 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder: (context) =>
-                                      ProfileScreen(uid: widget.userId),
-                                ),
+                                    builder: (context) =>
+                                        ProfileScreen(uid: widget.userId)),
                               );
                             },
                             child: VerifiedUsernameWidget(
                               username: widget.username,
                               uid: widget.userId,
                               style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: colors.textColor,
-                              ),
+                                  fontWeight: FontWeight.bold,
+                                  color: colors.textColor),
                             ),
                           ),
                           if (timeagoText.isNotEmpty)
                             Text(
                               timeagoText,
                               style: TextStyle(
-                                color: colors.textColor.withOpacity(0.6),
-                                fontSize: 12,
-                              ),
+                                  color: colors.textColor.withOpacity(0.6),
+                                  fontSize: 12),
                             ),
                         ],
                       ),
@@ -1655,10 +1596,9 @@ class _ImageViewScreenState extends State<ImageViewScreen>
                   child: Text(
                     widget.description,
                     style: TextStyle(
-                      color: colors.textColor,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w500,
-                    ),
+                        color: colors.textColor,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500),
                   ),
                 ),
               ),
