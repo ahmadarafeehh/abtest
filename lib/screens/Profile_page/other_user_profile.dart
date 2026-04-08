@@ -1,3 +1,4 @@
+// lib/screens/Profile_page/other_user_profile_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -67,9 +68,9 @@ class _OtherProfileDarkColors extends _OtherProfileColorSet {
           dividerColor: const Color(0xFF333333),
           dialogBackgroundColor: const Color(0xFF121212),
           dialogTextColor: const Color(0xFFd9d9d9),
-          errorTextColor: Colors.grey[600]!,
+          errorTextColor: Colors.grey,
           radioActiveColor: const Color(0xFFd9d9d9),
-          skeletonColor: const Color(0xFF333333).withOpacity(0.6),
+          skeletonColor: const Color(0xFF333333),
         );
 }
 
@@ -81,16 +82,16 @@ class _OtherProfileLightColors extends _OtherProfileColorSet {
           iconColor: Colors.black,
           appBarBackgroundColor: Colors.white,
           appBarIconColor: Colors.black,
-          progressIndicatorColor: Colors.grey[700]!,
-          avatarBackgroundColor: Colors.grey[300]!,
-          buttonBackgroundColor: Colors.grey[300]!,
+          progressIndicatorColor: Colors.grey,
+          avatarBackgroundColor: Colors.grey,
+          buttonBackgroundColor: Colors.grey,
           buttonTextColor: Colors.black,
-          dividerColor: Colors.grey[300]!,
+          dividerColor: Colors.grey,
           dialogBackgroundColor: Colors.white,
           dialogTextColor: Colors.black,
-          errorTextColor: Colors.grey[600]!,
+          errorTextColor: Colors.grey,
           radioActiveColor: Colors.black,
-          skeletonColor: Colors.grey[300]!.withOpacity(0.6),
+          skeletonColor: Colors.grey,
         );
 }
 
@@ -232,6 +233,14 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     return themeProvider.themeMode == ThemeMode.dark
         ? _OtherProfileDarkColors()
         : _OtherProfileLightColors();
+  }
+
+  // ── Safely extract video_edit_metadata as Map<String,dynamic>? ──────────
+  Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return null;
   }
 
   @override
@@ -470,10 +479,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
 
+      // ── FIXED: include video_edit_metadata in the select ──────────────
       final initialPosts = await _supabase
           .from('posts')
           .select(
-              'postId, postUrl, description, datePublished, uid, viewers_count')
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(0, postsLimit - 1);
@@ -632,10 +642,11 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     if (!_hasMorePosts || _isLoadingMore) return;
     setState(() => _isLoadingMore = true);
     try {
+      // ── FIXED: include video_edit_metadata in the select ──────────────
       final newPosts = await _supabase
           .from('posts')
           .select(
-              'postId, postUrl, description, datePublished, uid, viewers_count')
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
@@ -1550,7 +1561,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
     );
   }
 
-  // ========== POST ITEM — view count badge removed ==========
   Widget _buildOtherPostItem(
       Map<String, dynamic> post, _OtherProfileColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
@@ -1591,6 +1601,9 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
                   username: userData['username'] ?? '',
                   profImage: userData['photoUrl'] ?? '',
                   datePublished: post['datePublished'],
+                  // ── FIXED: pass video_edit_metadata ──────────────────
+                  videoEditMetadata:
+                      _extractEditMetadata(post['video_edit_metadata']),
                 ),
               ),
             ).then((_) {
@@ -1610,7 +1623,6 @@ class _OtherUserProfileScreenState extends State<OtherUserProfileScreen>
             child: Stack(
               fit: StackFit.expand,
               children: [
-                // ── media ────────────────────────────────────────────
                 isVideo
                     ? _buildPostVideoPlayer(postUrl, colors)
                     : _buildImageThumbnail(postUrl, colors),
