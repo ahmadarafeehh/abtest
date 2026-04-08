@@ -1,3 +1,4 @@
+import 'dart:io'; // For File class used in VideoEditResult.fromJson
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -8,6 +9,259 @@ import 'package:Ratedly/utils/theme_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:Ratedly/widgets/verified_username_widget.dart';
 import 'package:Ratedly/providers/user_provider.dart';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INLINE DEFINITIONS (normally from edit_shared.dart)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class FilterAdjustments {
+  final double brightness;
+  final double contrast;
+  final double saturation;
+
+  FilterAdjustments({
+    this.brightness = 0.0,
+    this.contrast = 1.0,
+    this.saturation = 1.0,
+  });
+
+  List<double> combinedMatrix(List<double> baseMatrix) {
+    final b = brightness;
+    final c = contrast;
+    final s = saturation;
+
+    // Simplified – adjust if your actual implementation differs
+    return [
+      c * s,
+      0,
+      0,
+      0,
+      b,
+      0,
+      c * s,
+      0,
+      0,
+      b,
+      0,
+      0,
+      c * s,
+      0,
+      b,
+      0,
+      0,
+      0,
+      1,
+      0,
+    ];
+  }
+
+  Map<String, dynamic> toJson() => {
+        'brightness': brightness,
+        'contrast': contrast,
+        'saturation': saturation,
+      };
+
+  factory FilterAdjustments.fromJson(Map<String, dynamic> json) =>
+      FilterAdjustments(
+        brightness: (json['brightness'] as num?)?.toDouble() ?? 0.0,
+        contrast: (json['contrast'] as num?)?.toDouble() ?? 1.0,
+        saturation: (json['saturation'] as num?)?.toDouble() ?? 1.0,
+      );
+}
+
+class FilterInfo {
+  final String name;
+  final List<double> matrix;
+  const FilterInfo({required this.name, required this.matrix});
+}
+
+const List<FilterInfo> kFilters = [
+  FilterInfo(name: 'Original', matrix: [
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+  ]),
+  // Add other filters as needed
+];
+
+class DrawStroke {
+  final List<Offset> points;
+  final Color color;
+  final double width;
+  final bool isEraser;
+
+  DrawStroke({
+    required this.points,
+    required this.color,
+    required this.width,
+    this.isEraser = false,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'points': points.map((p) => {'dx': p.dx, 'dy': p.dy}).toList(),
+        'color': color.value,
+        'width': width,
+        'isEraser': isEraser,
+      };
+
+  factory DrawStroke.fromJson(Map<String, dynamic> json) => DrawStroke(
+        points: (json['points'] as List)
+            .map((p) => Offset(p['dx'] as double, p['dy'] as double))
+            .toList(),
+        color: Color(json['color'] as int),
+        width: (json['width'] as num).toDouble(),
+        isEraser: json['isEraser'] as bool? ?? false,
+      );
+}
+
+class TextOverlay {
+  final String text;
+  final Offset position;
+  final Color color;
+  final double fontSize;
+  final String fontFamily;
+
+  TextOverlay({
+    required this.text,
+    required this.position,
+    required this.color,
+    required this.fontSize,
+    this.fontFamily = 'Roboto',
+  });
+
+  TextOverlay copyWith({double? fontSize}) => TextOverlay(
+        text: text,
+        position: position,
+        color: color,
+        fontSize: fontSize ?? this.fontSize,
+        fontFamily: fontFamily,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'text': text,
+        'dx': position.dx,
+        'dy': position.dy,
+        'color': color.value,
+        'fontSize': fontSize,
+        'fontFamily': fontFamily,
+      };
+
+  factory TextOverlay.fromJson(Map<String, dynamic> json) => TextOverlay(
+        text: json['text'] as String,
+        position: Offset(
+            (json['dx'] as num).toDouble(), (json['dy'] as num).toDouble()),
+        color: Color(json['color'] as int),
+        fontSize: (json['fontSize'] as num).toDouble(),
+        fontFamily: json['fontFamily'] as String? ?? 'Roboto',
+      );
+}
+
+class VideoEditResult {
+  final FilterAdjustments adjustments;
+  final int filterIndex;
+  final int rotationQuarters;
+  final List<DrawStroke> strokes;
+  final List<TextOverlay> overlays;
+  final File file;
+
+  VideoEditResult({
+    required this.adjustments,
+    required this.filterIndex,
+    required this.rotationQuarters,
+    required this.strokes,
+    required this.overlays,
+    required this.file,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'adjustments': adjustments.toJson(),
+        'filterIndex': filterIndex,
+        'rotationQuarters': rotationQuarters,
+        'strokes': strokes.map((s) => s.toJson()).toList(),
+        'overlays': overlays.map((o) => o.toJson()).toList(),
+      };
+
+  factory VideoEditResult.fromJson(Map<String, dynamic> json, File file) =>
+      VideoEditResult(
+        adjustments: FilterAdjustments.fromJson(
+            json['adjustments'] as Map<String, dynamic>),
+        filterIndex: json['filterIndex'] as int,
+        rotationQuarters: json['rotationQuarters'] as int? ?? 0,
+        strokes: (json['strokes'] as List? ?? [])
+            .map((s) => DrawStroke.fromJson(s as Map<String, dynamic>))
+            .toList(),
+        overlays: (json['overlays'] as List? ?? [])
+            .map((o) => TextOverlay.fromJson(o as Map<String, dynamic>))
+            .toList(),
+        file: file,
+      );
+}
+
+TextStyle overlayTextStyle(TextOverlay overlay) => TextStyle(
+      color: overlay.color,
+      fontSize: overlay.fontSize,
+      fontFamily: overlay.fontFamily,
+    );
+
+TextStyle overlayShadowStyle(TextOverlay overlay) => TextStyle(
+      color: Colors.black.withOpacity(0.5),
+      fontSize: overlay.fontSize,
+      fontFamily: overlay.fontFamily,
+    );
+
+class DrawingPainter extends CustomPainter {
+  final List<DrawStroke> strokes;
+  final DrawStroke? currentStroke;
+
+  DrawingPainter({required this.strokes, this.currentStroke});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final stroke in strokes) {
+      _drawStroke(canvas, stroke);
+    }
+    if (currentStroke != null) {
+      _drawStroke(canvas, currentStroke!);
+    }
+  }
+
+  void _drawStroke(Canvas canvas, DrawStroke stroke) {
+    if (stroke.points.isEmpty) return;
+    final paint = Paint()
+      ..color = stroke.isEraser ? Colors.transparent : stroke.color
+      ..strokeWidth = stroke.width
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..blendMode = stroke.isEraser ? BlendMode.clear : BlendMode.srcOver;
+    for (int i = 0; i < stroke.points.length - 1; i++) {
+      canvas.drawLine(stroke.points[i], stroke.points[i + 1], paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant DrawingPainter oldDelegate) => true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// END INLINE DEFINITIONS
+// ─────────────────────────────────────────────────────────────────────────────
 
 class _SearchColorSet {
   final Color textColor;
@@ -106,7 +360,8 @@ class _SearchScreenState extends State<SearchScreen>
   Set<String> blockedUsersSet = {};
   bool _isLoading = true;
 
-  // Pagination helpers
+  bool _showViewCount = false;
+
   int _offset = 0;
   bool _isLoadingMore = false;
   bool _hasMorePosts = true;
@@ -131,6 +386,82 @@ class _SearchScreenState extends State<SearchScreen>
     return themeProvider.themeMode == ThemeMode.dark
         ? _SearchDarkColors()
         : _SearchLightColors();
+  }
+
+  // ── Safely extract video_edit_metadata ──────────────────────────────────
+  Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return null;
+  }
+
+  // ── Parse VideoEditResult from a post map ───────────────────────────────
+  VideoEditResult? _parseEditResult(Map<String, dynamic> post) {
+    final meta = _extractEditMetadata(post['video_edit_metadata']);
+    if (meta == null) return null;
+    try {
+      return VideoEditResult.fromJson(meta, File(''));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ── Build colour-filter matrix ──────────────────────────────────────────
+  List<double> _buildColorMatrix(VideoEditResult? er) {
+    if (er == null) {
+      return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+    }
+    return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
+  }
+
+  // ── Overlay layer (strokes + text) scaled to the preview cell ───────────
+  Widget _buildEditOverlayLayer(
+      VideoEditResult editResult, BoxConstraints constraints) {
+    if (editResult.strokes.isEmpty && editResult.overlays.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final double previewW = constraints.maxWidth;
+    final double previewH = constraints.maxHeight;
+    final double screenW = MediaQuery.of(context).size.width;
+    final double screenH = MediaQuery.of(context).size.height;
+    final double scaleX = previewW / screenW;
+    final double scaleY = previewH / screenH;
+    final double fontScale = min(scaleX, scaleY);
+
+    return Stack(
+      clipBehavior: Clip.hardEdge,
+      children: [
+        if (editResult.strokes.isNotEmpty)
+          Positioned.fill(
+            child: CustomPaint(
+              painter: _ScaledDrawingPainter(
+                strokes: editResult.strokes,
+                scaleX: scaleX,
+                scaleY: scaleY,
+              ),
+            ),
+          ),
+        ...editResult.overlays.map((o) {
+          final scaledOverlay = o.copyWith(fontSize: o.fontSize * fontScale);
+          return Positioned(
+            left: (o.position.dx * previewW).clamp(0.0, previewW - 10),
+            top: (o.position.dy * previewH).clamp(0.0, previewH - 10),
+            child: Stack(clipBehavior: Clip.none, children: [
+              Text(o.text, style: overlayShadowStyle(scaledOverlay)),
+              Text(o.text, style: overlayTextStyle(scaledOverlay)),
+            ]),
+          );
+        }),
+      ],
+    );
+  }
+
+  String _formatViewCount(int count) {
+    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    return count.toString();
   }
 
   @override
@@ -290,7 +621,12 @@ class _SearchScreenState extends State<SearchScreen>
         l.contains('video=true');
   }
 
-  Widget _buildVideoPlayer(String videoUrl, _SearchColorSet colors) {
+  // ── UPDATED: Video player with edit support ─────────────────────────────
+  Widget _buildVideoPlayer(String videoUrl, _SearchColorSet colors,
+      [VideoEditResult? editResult]) {
+    if (!_videoControllers.containsKey(videoUrl)) {
+      _initializeVideoController(videoUrl);
+    }
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
     if (!isInitialized || controller == null) {
@@ -301,6 +637,10 @@ class _SearchScreenState extends State<SearchScreen>
                 color: colors.progressIndicatorColor)),
       );
     }
+
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
     return AspectRatio(
       aspectRatio: 0.75,
       child: ClipRRect(
@@ -308,16 +648,101 @@ class _SearchScreenState extends State<SearchScreen>
         child: Container(
           color: colors.gridItemBackgroundColor,
           child: Stack(fit: StackFit.expand, children: [
-            FittedBox(
-              fit: BoxFit.cover,
-              child: SizedBox(
-                width: controller.value.size.width,
-                height: controller.value.size.height,
-                child: VideoPlayer(controller),
+            Positioned.fill(
+              child: ColorFiltered(
+                colorFilter: ColorFilter.matrix(matrix),
+                child: Transform.rotate(
+                  angle: quarters * pi / 2,
+                  child: FittedBox(
+                    fit: BoxFit.cover,
+                    child: SizedBox(
+                      width: controller.value.size.width,
+                      height: controller.value.size.height,
+                      child: VideoPlayer(controller),
+                    ),
+                  ),
+                ),
               ),
             ),
+            if (editResult != null)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) =>
+                        _buildEditOverlayLayer(editResult, constraints),
+                  ),
+                ),
+              ),
           ]),
         ),
+      ),
+    );
+  }
+
+  // ── UPDATED: Static image with edit support ─────────────────────────────
+  Widget _buildPostImage(String imageUrl, _SearchColorSet colors,
+      [VideoEditResult? editResult]) {
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    Widget baseImage = ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: editResult == null
+          ? Image.network(
+              imageUrl,
+              fit: BoxFit.cover,
+              loadingBuilder: (_, child, progress) {
+                if (progress == null) return child;
+                return Center(
+                    child: CircularProgressIndicator(
+                        color: colors.progressIndicatorColor));
+              },
+              errorBuilder: (_, __, ___) => Container(
+                color: colors.gridItemBackgroundColor,
+                child: Icon(Icons.broken_image, color: colors.iconColor),
+              ),
+            )
+          : ColorFiltered(
+              colorFilter: ColorFilter.matrix(matrix),
+              child: Transform.rotate(
+                angle: quarters * pi / 2,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.cover,
+                  loadingBuilder: (_, child, progress) {
+                    if (progress == null) return child;
+                    return Center(
+                        child: CircularProgressIndicator(
+                            color: colors.progressIndicatorColor));
+                  },
+                  errorBuilder: (_, __, ___) => Container(
+                    color: colors.gridItemBackgroundColor,
+                    child: Icon(Icons.broken_image, color: colors.iconColor),
+                  ),
+                ),
+              ),
+            ),
+    );
+
+    if (editResult == null) {
+      return AspectRatio(aspectRatio: 0.75, child: baseImage);
+    }
+
+    return AspectRatio(
+      aspectRatio: 0.75,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Stack(fit: StackFit.expand, children: [
+          Positioned.fill(child: baseImage),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: LayoutBuilder(
+                builder: (context, constraints) =>
+                    _buildEditOverlayLayer(editResult, constraints),
+              ),
+            ),
+          ),
+        ]),
       ),
     );
   }
@@ -386,9 +811,24 @@ class _SearchScreenState extends State<SearchScreen>
     await Future.wait([
       _loadBlockedUsers(),
       _fetchPosts(),
+      _loadCurrentUserAbTest(),
     ]);
     _rotateSuggestedUsers();
     setState(() => _isLoading = false);
+  }
+
+  Future<void> _loadCurrentUserAbTest() async {
+    if (currentUserId == null) return;
+    try {
+      final result = await _supabase
+          .from('users')
+          .select('test')
+          .eq('uid', currentUserId!)
+          .maybeSingle();
+      if (mounted) {
+        setState(() => _showViewCount = result?['test'] == true);
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadBlockedUsers() async {
@@ -992,10 +1432,14 @@ class _SearchScreenState extends State<SearchScreen>
     ]);
   }
 
+  // ========== POST ITEM — now with edit support ==========
   Widget _buildPostItem(Map<String, dynamic> post, String postUrl,
       _SearchColorSet colors, bool isTopPost) {
     final isVideo = _isVideoFile(postUrl);
     if (isVideo) _initializeVideoController(postUrl);
+
+    final int viewCount = (post['viewers_count'] as num?)?.toInt() ?? 0;
+    final editResult = _parseEditResult(post);
 
     return InkWell(
       onTap: () async {
@@ -1014,6 +1458,8 @@ class _SearchScreenState extends State<SearchScreen>
               username: user?['username']?.toString() ?? '',
               profImage: user?['photoUrl']?.toString() ?? '',
               datePublished: post['datePublished']?.toString() ?? '',
+              videoEditMetadata:
+                  _extractEditMetadata(post['video_edit_metadata']),
             ),
           ),
         );
@@ -1026,37 +1472,15 @@ class _SearchScreenState extends State<SearchScreen>
         ),
         clipBehavior: Clip.hardEdge,
         child: Stack(children: [
-          // ── media ──────────────────────────────────────────────────────
           if (postUrl.isNotEmpty)
             isVideo
-                ? _buildVideoPlayer(postUrl, colors)
-                : AspectRatio(
-                    aspectRatio: 0.75,
-                    child: Image.network(
-                      postUrl,
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      height: double.infinity,
-                      loadingBuilder: (_, child, progress) {
-                        if (progress == null) return child;
-                        return Center(
-                            child: CircularProgressIndicator(
-                                color: colors.progressIndicatorColor));
-                      },
-                      errorBuilder: (_, __, ___) => Container(
-                        color: colors.gridItemBackgroundColor,
-                        child:
-                            Icon(Icons.broken_image, color: colors.iconColor),
-                      ),
-                    ),
-                  )
+                ? _buildVideoPlayer(postUrl, colors, editResult)
+                : _buildPostImage(postUrl, colors, editResult)
           else
             Container(
               color: colors.gridItemBackgroundColor,
               child: Icon(Icons.broken_image, color: colors.iconColor),
             ),
-
-          // ── trophy badge (top posts) ────────────────────────────────────
           if (isTopPost)
             Positioned(
               top: 4,
@@ -1068,6 +1492,33 @@ class _SearchScreenState extends State<SearchScreen>
                     shape: BoxShape.circle),
                 child: const Icon(Icons.emoji_events,
                     color: Colors.amber, size: 16),
+              ),
+            ),
+          if (_showViewCount)
+            Positioned(
+              bottom: 4,
+              left: 4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.visibility, size: 10, color: Colors.white),
+                    const SizedBox(width: 3),
+                    Text(
+                      _formatViewCount(viewCount),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
         ]),
@@ -1088,4 +1539,32 @@ class _SearchScreenState extends State<SearchScreen>
       return null;
     }
   }
+}
+
+// =============================================================================
+// SCALED DRAWING PAINTER
+// =============================================================================
+class _ScaledDrawingPainter extends CustomPainter {
+  final List<DrawStroke> strokes;
+  final double scaleX;
+  final double scaleY;
+
+  const _ScaledDrawingPainter({
+    required this.strokes,
+    required this.scaleX,
+    required this.scaleY,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.scale(scaleX, scaleY);
+    DrawingPainter(strokes: strokes, currentStroke: null)
+        .paint(canvas, Size(size.width / scaleX, size.height / scaleY));
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_ScaledDrawingPainter old) =>
+      old.strokes != strokes || old.scaleX != scaleX || old.scaleY != scaleY;
 }
