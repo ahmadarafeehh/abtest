@@ -1,5 +1,6 @@
 // lib/screens/Profile_page/current_profile_screen.dart
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/services/notification_service.dart';
@@ -198,10 +199,18 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   // ── Safely extract video_edit_metadata as Map<String,dynamic>? ──────────
+  // Now handles JSON strings (stored in Supabase) as well as direct maps.
   Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
     if (raw == null) return null;
     if (raw is Map<String, dynamic>) return raw;
     if (raw is Map) return Map<String, dynamic>.from(raw);
+    if (raw is String) {
+      try {
+        return jsonDecode(raw) as Map<String, dynamic>;
+      } catch (_) {
+        // Invalid JSON – ignore
+      }
+    }
     return null;
   }
 
