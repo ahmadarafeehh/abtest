@@ -1,6 +1,7 @@
 // lib/screens/Profile_page/current_profile_screen.dart
 import 'dart:async';
-import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/services/notification_service.dart';
@@ -17,6 +18,8 @@ import 'package:video_player/video_player.dart';
 import 'package:flutter/gestures.dart';
 import 'package:Ratedly/screens/Profile_page/gallery_detail_screen.dart';
 import 'package:country_flags/country_flags.dart';
+import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
+import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 class _ColorSet {
   final Color textColor;
@@ -199,19 +202,30 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   // ── Safely extract video_edit_metadata as Map<String,dynamic>? ──────────
-  // Now handles JSON strings (stored in Supabase) as well as direct maps.
   Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
     if (raw == null) return null;
     if (raw is Map<String, dynamic>) return raw;
     if (raw is Map) return Map<String, dynamic>.from(raw);
-    if (raw is String) {
-      try {
-        return jsonDecode(raw) as Map<String, dynamic>;
-      } catch (_) {
-        // Invalid JSON – ignore
-      }
-    }
     return null;
+  }
+
+  // ── Parse VideoEditResult from a post map, returns null on failure ───────
+  VideoEditResult? _parseEditResult(Map<String, dynamic> post) {
+    final meta = _extractEditMetadata(post['video_edit_metadata']);
+    if (meta == null) return null;
+    try {
+      return VideoEditResult.fromJson(meta, File(''));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ── Build the combined colour-filter matrix for a VideoEditResult ────────
+  List<double> _buildColorMatrix(VideoEditResult? er) {
+    if (er == null) {
+      return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+    }
+    return er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix);
   }
 
   @override
@@ -435,50 +449,121 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   bool _isVideoControllerInitialized(String url) =>
       _videoControllersInitialized[url] == true;
 
-  Widget _buildPostVideoPlayer(String videoUrl, _ColorSet colors) {
+  // ── Post grid thumbnail video player — applies filter + rotation ─────────
+  Widget _buildPostVideoPlayer(
+      String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
+
     if (!isInitialized || controller == null) {
       return Container(
           color: colors.cardColor,
           child: Center(
               child: CircularProgressIndicator(color: colors.textColor)));
     }
+
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(4),
       child: Stack(fit: StackFit.expand, children: [
         Positioned.fill(
-          child: FittedBox(
-            fit: BoxFit.cover,
-            child: SizedBox(
-                width: controller.value.size.width,
-                height: controller.value.size.height,
-                child: VideoPlayer(controller)),
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: controller.value.size.width,
+                  height: controller.value.size.height,
+                  child: VideoPlayer(controller),
+                ),
+              ),
+            ),
           ),
+        ),
+        // Draw strokes overlay (thumbnail preview)
+        if (editResult != null && editResult.strokes.isNotEmpty)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: DrawingPainter(
+                  strokes: editResult.strokes,
+                  currentStroke: null,
+                ),
+              ),
+            ),
+          ),
+        // Text overlays (thumbnail preview)
+        if (editResult != null && editResult.overlays.isNotEmpty)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final double w = constraints.maxWidth;
+                  final double h = constraints.maxHeight;
+                  return Stack(
+                    children: editResult.overlays.map((o) {
+                      return Positioned(
+                        left: (o.position.dx * w).clamp(0.0, w - 10),
+                        top: (o.position.dy * h).clamp(0.0, h - 10),
+                        child: Stack(clipBehavior: Clip.none, children: [
+                          Text(o.text, style: overlayShadowStyle(o)),
+                          Text(o.text, style: overlayTextStyle(o)),
+                        ]),
+                      );
+                    }).toList(),
+                  );
+                },
+              ),
+            ),
+          ),
+        // Video play indicator
+        Positioned(
+          bottom: 4,
+          right: 4,
+          child: Icon(Icons.videocam,
+              color: Colors.white.withOpacity(0.8), size: 14),
         ),
       ]),
     );
   }
 
-  Widget _buildGalleryVideoPlayer(String videoUrl, _ColorSet colors) {
+  // ── Gallery cover video player — applies filter + rotation ───────────────
+  Widget _buildGalleryVideoPlayer(
+      String videoUrl, _ColorSet colors, VideoEditResult? editResult) {
     final controller = _getVideoController(videoUrl);
     final isInitialized = _isVideoControllerInitialized(videoUrl);
+
     if (!isInitialized || controller == null) {
       return Container(
           color: colors.cardColor,
           child: Center(
               child: CircularProgressIndicator(color: colors.textColor)));
     }
+
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: Stack(fit: StackFit.expand, children: [
         Positioned.fill(
-          child: FittedBox(
-            fit: BoxFit.cover,
-            child: SizedBox(
-                width: controller.value.size.width,
-                height: controller.value.size.height,
-                child: VideoPlayer(controller)),
+          child: ColorFiltered(
+            colorFilter: ColorFilter.matrix(matrix),
+            child: Transform.rotate(
+              angle: quarters * math.pi / 2,
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: controller.value.size.width,
+                  height: controller.value.size.height,
+                  child: VideoPlayer(controller),
+                ),
+              ),
+            ),
           ),
         ),
       ]),
@@ -509,7 +594,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
 
-      // ── FIXED: include video_edit_metadata in the select ──────────────
       final initialPosts = await _supabase
           .from('posts')
           .select(
@@ -563,10 +647,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       final galleriesResponse = await _supabase
           .from('galleries')
           .select('''
-            *,
-            gallery_posts(count),
-            posts!cover_post_id(postUrl)
-          ''')
+ *,
+ gallery_posts(count),
+ posts!cover_post_id(postUrl, video_edit_metadata)
+ ''')
           .eq('uid', widget.uid)
           .order('created_at', ascending: false)
           .then<List>((v) => v)
@@ -638,7 +722,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         NotificationService().triggerServerNotification(
           type: 'nudge',
           targetUserId: widget.uid,
-          title: '📸 Post your first moment',
+          title: ' Post your first moment',
           body: 'Your first post could be the start of something big.',
           customData: {'source': 'no_post_nudge'},
         );
@@ -650,7 +734,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     if (!_hasMorePosts || _isLoadingMore) return;
     setState(() => _isLoadingMore = true);
     try {
-      // ── FIXED: include video_edit_metadata in the select ──────────────
       final newPosts = await _supabase
           .from('posts')
           .select(
@@ -1009,7 +1092,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ),
             const SizedBox(height: 10),
             Text(
-              'Go viral 🚀 The world is waiting for you!',
+              'Go viral The world is waiting for you!',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colors.textColor.withOpacity(0.6),
@@ -1104,6 +1187,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   Widget _buildPostItem(Map<String, dynamic> post, _ColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
+    final editResult = _parseEditResult(post);
 
     return GestureDetector(
       onTap: () {
@@ -1123,8 +1207,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               profImage: userData['photoUrl']?.toString() ?? '',
               onPostDeleted: () async => getData(),
               datePublished: post['datePublished']?.toString() ?? '',
-              // ── FIXED: pass video_edit_metadata ──────────────────────
-              videoEditMetadata: _extractEditMetadata(post['video_edit_metadata']),
+              videoEditMetadata:
+                  _extractEditMetadata(post['video_edit_metadata']),
             ),
           ),
         ).then((_) {
@@ -1142,18 +1226,55 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           fit: StackFit.expand,
           children: [
             isVideo
-                ? _buildPostVideoPlayer(postUrl, colors)
-                : ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: Image.network(postUrl,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
-                              color: colors.cardColor,
-                              child: Icon(Icons.broken_image,
-                                  color: colors.iconColor, size: 20),
-                            )),
-                  ),
+                ? _buildPostVideoPlayer(postUrl, colors, editResult)
+                : _buildPostImage(post, colors),
           ],
+        ),
+      ),
+    );
+  }
+
+  // ── Static image thumbnail — applies filter + rotation if present ─────────
+  Widget _buildPostImage(Map<String, dynamic> post, _ColorSet colors) {
+    final postUrl = post['postUrl'] ?? '';
+    final editResult = _parseEditResult(post);
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    Widget image = ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Image.network(
+        postUrl,
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        errorBuilder: (_, __, ___) => Container(
+          color: colors.cardColor,
+          child: Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+        ),
+      ),
+    );
+
+    // Only wrap with transforms when there is actual edit data
+    if (editResult == null) return image;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: ColorFiltered(
+        colorFilter: ColorFilter.matrix(matrix),
+        child: Transform.rotate(
+          angle: quarters * math.pi / 2,
+          child: Image.network(
+            postUrl,
+            fit: BoxFit.cover,
+            width: double.infinity,
+            height: double.infinity,
+            errorBuilder: (_, __, ___) => Container(
+              color: colors.cardColor,
+              child:
+                  Icon(Icons.broken_image, color: colors.iconColor, size: 20),
+            ),
+          ),
         ),
       ),
     );
@@ -1232,9 +1353,22 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         gallery['gallery_posts'] != null && gallery['gallery_posts'].isNotEmpty
             ? gallery['gallery_posts'][0]['count'] ?? 0
             : 0;
-    final coverImageUrl =
-        gallery['posts'] != null ? gallery['posts']['postUrl'] ?? '' : '';
+    final coverPost = gallery['posts'] != null
+        ? gallery['posts'] as Map<String, dynamic>
+        : null;
+    final coverImageUrl = coverPost != null ? coverPost['postUrl'] ?? '' : '';
     final isVideoCover = _isVideoFile(coverImageUrl);
+
+    // Parse edit metadata for the gallery cover post
+    VideoEditResult? coverEditResult;
+    if (coverPost != null) {
+      final coverMeta = _extractEditMetadata(coverPost['video_edit_metadata']);
+      if (coverMeta != null) {
+        try {
+          coverEditResult = VideoEditResult.fromJson(coverMeta, File(''));
+        } catch (_) {}
+      }
+    }
 
     return GestureDetector(
       onTap: () {
@@ -1263,17 +1397,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: isVideoCover
-                  ? _buildGalleryVideoPlayer(coverImageUrl, colors)
-                  : Image.network(coverImageUrl,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                            decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(8),
-                                color: colors.cardColor.withOpacity(0.5)),
-                            child: Icon(Icons.collections,
-                                size: 40,
-                                color: colors.textColor.withOpacity(0.5)),
-                          )),
+                  ? _buildGalleryVideoPlayer(
+                      coverImageUrl, colors, coverEditResult)
+                  : _buildGalleryCoverImage(
+                      coverImageUrl, colors, coverEditResult),
             )
           else
             Container(
@@ -1319,6 +1446,45 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ),
           ),
         ]),
+      ),
+    );
+  }
+
+  // ── Gallery cover static image — applies filter + rotation ───────────────
+  Widget _buildGalleryCoverImage(
+      String url, _ColorSet colors, VideoEditResult? editResult) {
+    final List<double> matrix = _buildColorMatrix(editResult);
+    final int quarters = editResult?.rotationQuarters ?? 0;
+
+    if (editResult == null) {
+      return Image.network(
+        url,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(
+          decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              color: colors.cardColor.withOpacity(0.5)),
+          child: Icon(Icons.collections,
+              size: 40, color: colors.textColor.withOpacity(0.5)),
+        ),
+      );
+    }
+
+    return ColorFiltered(
+      colorFilter: ColorFilter.matrix(matrix),
+      child: Transform.rotate(
+        angle: quarters * math.pi / 2,
+        child: Image.network(
+          url,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: colors.cardColor.withOpacity(0.5)),
+            child: Icon(Icons.collections,
+                size: 40, color: colors.textColor.withOpacity(0.5)),
+          ),
+        ),
       ),
     );
   }
