@@ -484,49 +484,73 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
             ),
           ),
         ),
-        // Draw strokes overlay (thumbnail preview)
-        if (editResult != null && editResult.strokes.isNotEmpty)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: DrawingPainter(
-                  strokes: editResult.strokes,
-                  currentStroke: null,
-                ),
-              ),
-            ),
-          ),
-        // Text overlays (thumbnail preview)
-        if (editResult != null && editResult.overlays.isNotEmpty)
+        // Strokes + text overlays — both authored in full-screen space,
+        // so we measure the preview cell and apply a single uniform scale
+        // transform so that everything (stroke thickness, font size, and
+        // positions) shrinks proportionally to fill the thumbnail.
+        if (editResult != null &&
+            (editResult.strokes.isNotEmpty || editResult.overlays.isNotEmpty))
           Positioned.fill(
             child: IgnorePointer(
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  final double w = constraints.maxWidth;
-                  final double h = constraints.maxHeight;
-                  return Stack(
-                    children: editResult.overlays.map((o) {
-                      return Positioned(
-                        left: (o.position.dx * w).clamp(0.0, w - 10),
-                        top: (o.position.dy * h).clamp(0.0, h - 10),
-                        child: Stack(clipBehavior: Clip.none, children: [
-                          Text(o.text, style: overlayShadowStyle(o)),
-                          Text(o.text, style: overlayTextStyle(o)),
-                        ]),
-                      );
-                    }).toList(),
+                  final double previewW = constraints.maxWidth;
+                  final double previewH = constraints.maxHeight;
+
+                  // The edit layer was authored at full-screen dimensions.
+                  final double screenW = MediaQuery.of(context).size.width;
+                  final double screenH = MediaQuery.of(context).size.height;
+
+                  final double scaleX = previewW / screenW;
+                  final double scaleY = previewH / screenH;
+
+                  return Transform(
+                    // Anchor the scale at the top-left so that authored
+                    // positions map directly to the same relative location
+                    // in the preview cell.
+                    transform:
+                        Matrix4.diagonal3Values(scaleX, scaleY, 1.0),
+                    alignment: Alignment.topLeft,
+                    child: SizedBox(
+                      width: screenW,
+                      height: screenH,
+                      child: Stack(
+                        children: [
+                          // Drawing strokes — points are in full-screen
+                          // coordinates; the parent transform scales them.
+                          if (editResult.strokes.isNotEmpty)
+                            Positioned.fill(
+                              child: CustomPaint(
+                                painter: DrawingPainter(
+                                  strokes: editResult.strokes,
+                                  currentStroke: null,
+                                ),
+                              ),
+                            ),
+                          // Text overlays — normalised (0–1) positions
+                          // multiplied back to screen dimensions here; the
+                          // parent transform then scales the whole layer.
+                          ...editResult.overlays.map((o) {
+                            return Positioned(
+                              left: (o.position.dx * screenW)
+                                  .clamp(0.0, screenW - 10),
+                              top: (o.position.dy * screenH)
+                                  .clamp(0.0, screenH - 10),
+                              child: Stack(clipBehavior: Clip.none, children: [
+                                Text(o.text, style: overlayShadowStyle(o)),
+                                Text(o.text, style: overlayTextStyle(o)),
+                              ]),
+                            );
+                          }),
+                        ],
+                      ),
+                    ),
                   );
                 },
               ),
             ),
           ),
-        // Video play indicator
-        Positioned(
-          bottom: 4,
-          right: 4,
-          child: Icon(Icons.videocam,
-              color: Colors.white.withOpacity(0.8), size: 14),
-        ),
+        // Video indicator icon intentionally removed.
       ]),
     );
   }
