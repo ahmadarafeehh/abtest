@@ -19,10 +19,26 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 // Identity matrix — passthrough when no filter/adjust is applied.
 const List<double> _kIdentityMatrix = [
-  1, 0, 0, 0, 0,
-  0, 1, 0, 0, 0,
-  0, 0, 1, 0, 0,
-  0, 0, 0, 1, 0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
 ];
 
 class AddPostScreen extends StatefulWidget {
@@ -36,7 +52,8 @@ class AddPostScreen extends StatefulWidget {
 
   /// Full edit state from VideoEditScreen — filters, adjustments,
   /// draw strokes, text overlays, and rotation quarters are re-applied
-  /// as widget layers on the preview.
+  /// as widget layers on the preview AND serialised into the post record
+  /// so every viewer can reconstruct the same visual output.
   final VideoEditResult? editResult;
 
   const AddPostScreen({
@@ -444,11 +461,21 @@ class _AddPostScreenState extends State<AddPostScreen>
   // POST UPLOAD
   // ===========================================================================
 
+  /// Uploads the selected media.
+  ///
+  /// For video posts the full [VideoEditResult] is serialised via [toJson]
+  /// and forwarded to [SupabasePostsMethods.uploadVideoPostFromFile] as
+  /// [editMetadata]. The server stores it in the `video_edit_metadata`
+  /// column so every viewer can reconstruct the same colour filter,
+  /// rotation, draw strokes, and text overlays on playback.
   void postMedia(AppUser user) async {
     if (_descriptionController.text.length > 250) {
       if (context.mounted) {
-        showSnackBar(context,
-            'Caption cannot exceed 250 characters. Your caption is ${_descriptionController.text.length} characters.');
+        showSnackBar(
+          context,
+          'Caption cannot exceed 250 characters. '
+          'Your caption is ${_descriptionController.text.length} characters.',
+        );
       }
       return;
     }
@@ -468,12 +495,22 @@ class _AddPostScreenState extends State<AddPostScreen>
     }
 
     await _videoController?.pause();
-    if (mounted) setState(() { isLoading = true; _isPlaying = false; });
+    if (mounted)
+      setState(() {
+        isLoading = true;
+        _isPlaying = false;
+      });
 
     try {
       final String res;
 
       if (_isVideo) {
+        // Serialise every edit parameter so the server can store and later
+        // return it. Null-safe: if the user picked a gallery video without
+        // going through VideoEditScreen, editResult will be null and we
+        // pass null — the server treats that as "no edits".
+        final Map<String, dynamic>? editJson = widget.editResult?.toJson();
+
         res = await SupabasePostsMethods().uploadVideoPostFromFile(
           _descriptionController.text,
           _videoFile!,
@@ -481,6 +518,7 @@ class _AddPostScreenState extends State<AddPostScreen>
           user.username ?? '',
           user.photoUrl ?? '',
           user.gender ?? '',
+          editMetadata: editJson,
         );
       } else {
         res = await SupabasePostsMethods().uploadPost(
@@ -532,7 +570,7 @@ class _AddPostScreenState extends State<AddPostScreen>
   // HELPERS
   // ===========================================================================
 
-  /// Combined color matrix from the edit result, or identity if none.
+  /// Combined colour matrix from the edit result, or identity if none.
   List<double> get _colorMatrix {
     final r = widget.editResult;
     if (r == null) return _kIdentityMatrix;
@@ -541,6 +579,8 @@ class _AddPostScreenState extends State<AddPostScreen>
 
   // ===========================================================================
   // VIDEO PREVIEW
+  // Applies colour filter, rotation, draw strokes, and text overlays from
+  // widget.editResult so the composer sees an exact replica of the edit.
   // ===========================================================================
   Widget _buildVideoPreview() {
     final VideoEditResult? er = widget.editResult;
@@ -559,9 +599,10 @@ class _AddPostScreenState extends State<AddPostScreen>
             return Stack(
               alignment: Alignment.center,
               children: [
-                // Black backing so there are no white gaps
+                // Black backing so there are no white gaps.
                 Positioned.fill(child: Container(color: Colors.black)),
 
+                // ── Video with colour filter + rotation ──────────────────
                 if (_isVideoInitialized && _videoController != null)
                   ColorFiltered(
                     colorFilter: ColorFilter.matrix(_colorMatrix),
@@ -578,6 +619,7 @@ class _AddPostScreenState extends State<AddPostScreen>
                 else
                   const CircularProgressIndicator(color: Colors.white),
 
+                // ── Draw strokes ─────────────────────────────────────────
                 if (er != null && er.strokes.isNotEmpty)
                   Positioned.fill(
                     child: IgnorePointer(
@@ -590,8 +632,10 @@ class _AddPostScreenState extends State<AddPostScreen>
                     ),
                   ),
 
+                // ── Text overlays ────────────────────────────────────────
                 if (er != null) ..._buildTextOverlays(er, w, h),
 
+                // ── Paused indicator ─────────────────────────────────────
                 if (_isVideoInitialized && !_isPlaying)
                   IgnorePointer(
                     child: Container(
@@ -633,7 +677,6 @@ class _AddPostScreenState extends State<AddPostScreen>
 
   // ===========================================================================
   // IMAGE PREVIEW
-  // Edge-to-edge, black background, no border — fills the container fully.
   // ===========================================================================
   Widget _buildImagePreview() {
     return SizedBox(
@@ -673,8 +716,6 @@ class _AddPostScreenState extends State<AddPostScreen>
     final int charCount = _descriptionController.text.length;
     final bool isNearLimit = charCount > 200;
     final bool isOverLimit = charCount > 250;
-
-    // Clamp progress to 0–1 so the indicator never overflows.
     final double progress = (charCount / 250).clamp(0.0, 1.0);
 
     return Container(
@@ -692,7 +733,7 @@ class _AddPostScreenState extends State<AddPostScreen>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // ── Avatar + text field row ──────────────────────────────────
+          // ── Avatar + text field row ────────────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 8, 0),
             child: Row(
@@ -725,7 +766,6 @@ class _AddPostScreenState extends State<AddPostScreen>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Username label
                       Text(
                         user.username ?? '',
                         style: TextStyle(
@@ -736,7 +776,6 @@ class _AddPostScreenState extends State<AddPostScreen>
                         ),
                       ),
                       const SizedBox(height: 2),
-                      // Caption field
                       TextField(
                         controller: _descriptionController,
                         focusNode: _captionFocusNode,
@@ -754,7 +793,7 @@ class _AddPostScreenState extends State<AddPostScreen>
                           border: InputBorder.none,
                           isDense: true,
                           contentPadding: EdgeInsets.zero,
-                          counterText: '', // hide the default counter
+                          counterText: '',
                         ),
                         maxLines: 4,
                         minLines: 2,
@@ -795,7 +834,6 @@ class _AddPostScreenState extends State<AddPostScreen>
           ),
 
           // ── Character counter with progress bar ───────────────────────
-          // Only shown when near the limit (charCount > 200)
           if (isNearLimit) ...[
             const SizedBox(height: 8),
             Padding(
@@ -816,7 +854,6 @@ class _AddPostScreenState extends State<AddPostScreen>
 
           const SizedBox(height: 10),
 
-          // ── Bottom bar: character counter (only when near limit) ───────
           if (isNearLimit)
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
@@ -889,20 +926,13 @@ class _AddPostScreenState extends State<AddPostScreen>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Loading bar
                   if (isLoading)
                     LinearProgressIndicator(
                       color: primaryColor,
                       backgroundColor: primaryColor.withOpacity(0.2),
                     ),
-
-                  // ── Image preview ──────────────────────────────────────
                   if (!_isVideo && _file != null) _buildImagePreview(),
-
-                  // ── Video preview ──────────────────────────────────────
                   if (_isVideo && _videoFile != null) _buildVideoPreview(),
-
-                  // ── Caption card ───────────────────────────────────────
                   _buildCaptionInput(user),
                 ],
               ),
