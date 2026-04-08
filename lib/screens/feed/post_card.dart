@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:Ratedly/models/user.dart' as model;
@@ -19,6 +21,8 @@ import 'package:Ratedly/resources/supabase_posts_methods.dart';
 import 'package:Ratedly/resources/profile_firestore_methods.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
+import 'package:Ratedly/screens/Profile_page/video_edit_screen.dart';
 
 void unawaited(Future<void> future) {}
 
@@ -176,38 +180,33 @@ class _PostCardState extends State<PostCard>
         WidgetsBindingObserver,
         TickerProviderStateMixin {
   // =========================================================================
-  // DATA FIELDS (now populated from RPC)
+  // DATA FIELDS
   // =========================================================================
   late int _commentCount;
   bool _isBlocked = false;
   bool _viewRecorded = false;
   late RealtimeChannel _postChannel;
 
-  // Ratings
   int _totalRatingsCount = 0;
   double _averageRating = 0.0;
   double? _userRating;
   bool _showSlider = true;
   late List<Map<String, dynamic>> _localRatings;
 
-  // Profile / owner data
-  String? _resolvedProfImage; // actual photoUrl (might be video)
-  String? _ownerUsername; // from RPC
-  bool _isTestUser = true; // from RPC (viewer's test flag)
+  String? _resolvedProfImage;
+  String? _ownerUsername;
+  bool _isTestUser = true;
 
-  // Follow status
   bool _isFollowing = false;
   bool _hasPendingRequest = false;
   bool _isLoadingFollow = false;
   bool _showFollowBadge = false;
 
-  // Animations
   late AnimationController _followAnimController;
   late Animation<double> _followScaleAnim;
   late AnimationController _tickAnimController;
   late Animation<double> _tickAnim;
 
-  // UI / video state
   bool _isCaptionExpanded = false;
   bool _hasBeenSeen = false;
 
@@ -219,6 +218,9 @@ class _PostCardState extends State<PostCard>
   VideoPlayerController? _profileVideoController;
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = true;
+
+  // Parsed once in initState from widget.snap['video_edit_metadata']
+  VideoEditResult? _editResult;
 
   final ApiService _apiService = ApiService();
   final VideoManager _videoManager = VideoManager();
@@ -273,6 +275,26 @@ class _PostCardState extends State<PostCard>
   bool get wantKeepAlive => true;
 
   // =========================================================================
+  // EDIT METADATA HELPER
+  // =========================================================================
+
+  /// Parses video_edit_metadata from the post snap into a VideoEditResult.
+  /// Returns null if the post has no edits or the data is malformed.
+  /// File('') is a safe placeholder — the viewer path never accesses videoFile.
+  VideoEditResult? _parseEditResult() {
+    final raw = widget.snap['video_edit_metadata'];
+    if (raw == null) return null;
+    try {
+      final Map<String, dynamic> json = raw is Map<String, dynamic>
+          ? raw
+          : Map<String, dynamic>.from(raw as Map);
+      return VideoEditResult.fromJson(json, File(''));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // =========================================================================
   // LIFECYCLE
   // =========================================================================
   @override
@@ -290,21 +312,22 @@ class _PostCardState extends State<PostCard>
     _tickAnim =
         CurvedAnimation(parent: _tickAnimController, curve: Curves.easeOut);
 
-    // Initialise local ratings from widget.snap (if present)
+    // Parse edit metadata once so _buildVideoPlayer can use it without
+    // re-parsing on every rebuild.
+    _editResult = _parseEditResult();
+
     _localRatings = [];
     if (widget.snap['ratings'] != null) {
       _localRatings = (widget.snap['ratings'] as List<dynamic>)
           .map<Map<String, dynamic>>((r) => r as Map<String, dynamic>)
           .toList();
     }
-    // Fallback comment count from widget.snap
     _commentCount = (widget.snap['commentsCount'] ?? 0).toInt();
 
-    _setupRealtime(); // keeps realtime updates
-    _recordView(); // still separate – it's a write
-    _loadPostCardData(); // ONE RPC CALL replaces everything else
+    _setupRealtime();
+    _recordView();
+    _loadPostCardData();
 
-    // Video handling (unchanged)
     if (_isVideo) {
       if (widget.preloadedVideoController != null && widget.isVideoPreloaded) {
         _videoController = widget.preloadedVideoController;
@@ -364,8 +387,8 @@ class _PostCardState extends State<PostCard>
       final response = await Supabase.instance.client.rpc(
         'get_post_card_data_text',
         params: {
-          'p_post_id': _postId, // _postId is already a string (UUID as text)
-          'p_viewer_id': user.uid, // user.uid is text
+          'p_post_id': _postId,
+          'p_viewer_id': user.uid,
         },
       );
 
@@ -373,49 +396,40 @@ class _PostCardState extends State<PostCard>
       final data = response as Map<String, dynamic>;
 
       setState(() {
-        // Owner info
         _resolvedProfImage = data['ownerPhotoUrl'];
         _ownerUsername = data['ownerUsername'];
         _isTestUser = data['viewerIsTestUser'] ?? true;
 
-        // Ratings
         _totalRatingsCount = data['ratingsCount'] ?? 0;
         _averageRating = (data['averageRating'] ?? 0.0).toDouble();
         _userRating = data['userRating']?.toDouble();
-        _showSlider = _userRating == null; // true if no rating yet
+        _showSlider = _userRating == null;
 
-        // Convert allRatings JSON array to local list
         final allRatings = data['allRatings'] as List? ?? [];
         _localRatings = allRatings
             .map<Map<String, dynamic>>((r) => r as Map<String, dynamic>)
             .toList();
 
-        // Comments count
         _commentCount = data['commentsCount'] ?? 0;
 
-        // Follow status
         _isFollowing = data['isFollowing'] ?? false;
         _hasPendingRequest = data['hasPendingRequest'] ?? false;
         _showFollowBadge = !_isFollowing && !_hasPendingRequest;
         if (_showFollowBadge) _followAnimController.forward();
 
-        // Block status
         _isBlocked = data['isBlocked'] ?? false;
       });
 
-      // If the owner has a profile video, initialise it now that we have _resolvedProfImage
       if (_isProfileVideo && !_isProfileVideoInitialized) {
         _initializeProfileVideo();
       }
     } catch (e) {
-      // If the RPC fails, we fall back to the old separate queries (optional)
-      // but we can just leave fields as defaults and let realtime fill later.
-      // You could add a fallback to the old methods here, but the RPC should work.
+      // Defaults remain; realtime will fill later.
     }
   }
 
   // =========================================================================
-  // REAL-TIME UPDATES (unchanged, but now uses the state fields)
+  // REAL-TIME UPDATES
   // =========================================================================
   void _setupRealtime() {
     _postChannel =
@@ -454,7 +468,6 @@ class _PostCardState extends State<PostCard>
   }
 
   void _refreshCommentCount() async {
-    // Fetch fresh counts from DB
     try {
       final commentsResponse = await Supabase.instance.client
           .from('comments')
@@ -466,9 +479,7 @@ class _PostCardState extends State<PostCard>
           .eq('postid', widget.snap['postId']);
       final int total = commentsResponse.length + repliesResponse.length;
       if (mounted) setState(() => _commentCount = total);
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
   }
 
   void _handleRatingUpdate(PostgresChangePayload payload) {
@@ -541,7 +552,7 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // RATING UI METHODS (unchanged)
+  // RATING UI METHODS
   // =========================================================================
   void _handleRatingSubmitted(double rating) async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
@@ -585,8 +596,7 @@ class _PostCardState extends State<PostCard>
     try {
       final success =
           await _postsMethods.ratePost(widget.snap['postId'], user.uid, rating);
-      if (success != 'success' && mounted)
-        _loadPostCardData(); // fallback reload
+      if (success != 'success' && mounted) _loadPostCardData();
     } catch (e) {
       if (mounted) _loadPostCardData();
     }
@@ -595,7 +605,7 @@ class _PostCardState extends State<PostCard>
   void _handleEditRating() => setState(() => _showSlider = true);
 
   // =========================================================================
-  // FOLLOW / BLOCK HANDLERS (unchanged but now use state fields)
+  // FOLLOW HANDLER
   // =========================================================================
   Future<void> _handleFollowTap() async {
     final user = Provider.of<UserProvider>(context, listen: false).user;
@@ -671,7 +681,7 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // VIEW RECORDING (unchanged)
+  // VIEW RECORDING
   // =========================================================================
   void _recordView() async {
     if (_viewRecorded) return;
@@ -690,7 +700,7 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // VIDEO / PROFILE VIDEO HANDLERS (unchanged)
+  // VIDEO PLAYER
   // =========================================================================
   Future<void> _initializeVideoPlayer() async {
     if (_isVideoLoading || _isVideoInitialized) return;
@@ -801,7 +811,9 @@ class _PostCardState extends State<PostCard>
     if (mounted) setState(() {});
   }
 
-  // Profile video
+  // =========================================================================
+  // PROFILE VIDEO
+  // =========================================================================
   Future<void> _initializeProfileVideo() async {
     if (_profileVideoController != null || _isProfileVideoInitialized) return;
     try {
@@ -1018,7 +1030,7 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // BUILD METHODS
+  // LIFECYCLE OVERRIDES
   // =========================================================================
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -1059,6 +1071,9 @@ class _PostCardState extends State<PostCard>
     }
   }
 
+  // =========================================================================
+  // UI HELPERS
+  // =========================================================================
   Widget _buildCaptionWithVisibility(_ColorSet colors) {
     final caption = widget.snap['description'].toString();
     final bool needsTruncation = caption.length > 80;
@@ -1399,24 +1414,45 @@ class _PostCardState extends State<PostCard>
     );
   }
 
+  // =========================================================================
+  // VIDEO PLAYER — applies filter, rotation, draw strokes, text overlays
+  // from video_edit_metadata so viewers see the same result as the creator.
+  // =========================================================================
   Widget _buildVideoPlayer(_ColorSet colors) {
+    final VideoEditResult? er = _editResult;
+
+    // Combined colour matrix: filter preset × adjustment sliders.
+    // Identity matrix is used when no edit metadata is present.
+    final List<double> matrix = er != null
+        ? er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix)
+        : [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+
+    final int quarters = er?.rotationQuarters ?? 0;
+
     return Container(
       color: Colors.black,
       child: Stack(
         fit: StackFit.expand,
         children: [
+          // ── Video with colour filter + rotation ──────────────────────
           if (_isVideoInitialized)
             GestureDetector(
               onTap: _toggleVideoPlayback,
-              child: SizedBox(
-                width: double.infinity,
-                height: double.infinity,
-                child: FittedBox(
-                  fit: BoxFit.cover,
+              child: ColorFiltered(
+                colorFilter: ColorFilter.matrix(matrix),
+                child: Transform.rotate(
+                  angle: quarters * math.pi / 2,
                   child: SizedBox(
-                    width: _videoController!.value.size.width,
-                    height: _videoController!.value.size.height,
-                    child: VideoPlayer(_videoController!),
+                    width: double.infinity,
+                    height: double.infinity,
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: _videoController!.value.size.width,
+                        height: _videoController!.value.size.height,
+                        child: VideoPlayer(_videoController!),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -1453,6 +1489,46 @@ class _PostCardState extends State<PostCard>
                 ),
               ),
             ),
+
+          // ── Draw strokes overlay ─────────────────────────────────────
+          if (er != null && er.strokes.isNotEmpty)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: DrawingPainter(
+                    strokes: er.strokes,
+                    currentStroke: null,
+                  ),
+                ),
+              ),
+            ),
+
+          // ── Text overlays ────────────────────────────────────────────
+          if (er != null && er.overlays.isNotEmpty)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final double w = constraints.maxWidth;
+                    final double h = constraints.maxHeight;
+                    return Stack(
+                      children: er.overlays.map((o) {
+                        return Positioned(
+                          left: (o.position.dx * w).clamp(0.0, w - 10),
+                          top: (o.position.dy * h).clamp(0.0, h - 10),
+                          child: Stack(clipBehavior: Clip.none, children: [
+                            Text(o.text, style: overlayShadowStyle(o)),
+                            Text(o.text, style: overlayTextStyle(o)),
+                          ]),
+                        );
+                      }).toList(),
+                    );
+                  },
+                ),
+              ),
+            ),
+
+          // ── Play button when paused ──────────────────────────────────
           if (_isVideoInitialized && !_isVideoPlaying)
             GestureDetector(
               onTap: _playVideo,
