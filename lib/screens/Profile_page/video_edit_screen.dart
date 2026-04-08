@@ -10,6 +10,10 @@ import 'package:Ratedly/screens/Profile_page/edit_shared.dart';
 
 enum _Tool { trim, filters, adjust, draw, text, rotate }
 
+// =============================================================================
+// VIDEO EDIT RESULT
+// =============================================================================
+
 class VideoEditResult {
   final File videoFile;
   final int filterIndex;
@@ -26,7 +30,44 @@ class VideoEditResult {
     required this.overlays,
     required this.rotationQuarters,
   });
+
+  // ── Serialization ──────────────────────────────────────────────────────────
+  /// Converts every edit parameter to a plain JSON-safe map.
+  /// The [videoFile] path is NOT included — callers store the uploaded URL
+  /// separately. Use [fromJson] + a locally cached file to reconstruct.
+  Map<String, dynamic> toJson() => {
+        'filterIndex': filterIndex,
+        'rotationQuarters': rotationQuarters,
+        'adjustments': adjustments.toJson(),
+        'strokes': strokes.map((s) => s.toJson()).toList(),
+        'overlays': overlays.map((o) => o.toJson()).toList(),
+      };
+
+  /// Reconstructs a [VideoEditResult] from the JSON previously produced by
+  /// [toJson]. Pass the locally cached [videoFile] separately.
+  factory VideoEditResult.fromJson(
+    Map<String, dynamic> json,
+    File videoFile,
+  ) =>
+      VideoEditResult(
+        videoFile: videoFile,
+        filterIndex: json['filterIndex'] as int? ?? 0,
+        rotationQuarters: json['rotationQuarters'] as int? ?? 0,
+        adjustments: EditAdjustments.fromJson(
+          (json['adjustments'] as Map<String, dynamic>?) ?? {},
+        ),
+        strokes: ((json['strokes'] as List?) ?? [])
+            .map((s) => DrawStroke.fromJson(s as Map<String, dynamic>))
+            .toList(),
+        overlays: ((json['overlays'] as List?) ?? [])
+            .map((o) => TextOverlay.fromJson(o as Map<String, dynamic>))
+            .toList(),
+      );
 }
+
+// =============================================================================
+// SCREEN
+// =============================================================================
 
 class VideoEditScreen extends StatefulWidget {
   final File videoFile;
@@ -98,8 +139,6 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   static const double _panelH = 212.0;
 
   // ── Per-flow trim cap ─────────────────────────────────────────────────────
-  // Profile flow  (widget.onResult != null) →  5 s
-  // Post flow     (widget.onResult == null) → 15 s
   bool get _isProfileFlow => widget.onResult != null;
   double get _maxTrimMs => _isProfileFlow ? 5000.0 : 15000.0;
   Duration get _maxTrimDuration => Duration(milliseconds: _maxTrimMs.toInt());
@@ -480,14 +519,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
   }
 
   // ===========================================================================
-  // NEXT
+  // NEXT — builds VideoEditResult and navigates
   // ===========================================================================
 
   Future<void> _onNext() async {
-    // Guard against re-entrant calls (e.g. rapid double-taps on Done).
     if (_isProcessing) return;
     setState(() => _isProcessing = true);
 
+    // Flush any unsaved trim first so _activeVideoFile is up to date.
     if (_trimDirty) {
       await _saveTrim();
       if (!mounted) return;
@@ -497,6 +536,9 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
     if (!mounted) return;
 
     try {
+      // Build the complete, serialisable result. Every edit parameter is
+      // captured here; toJson() round-trips it for Supabase storage so that
+      // other clients can reconstruct the same visual output on playback.
       final result = VideoEditResult(
         videoFile: _activeVideoFile,
         filterIndex: _selectedFilterIndex,
@@ -507,11 +549,12 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       );
 
       if (widget.onResult != null) {
+        // Profile flow — hand result back to caller.
         widget.onResult!(result);
-        if (mounted) {
-          Navigator.popUntil(context, (route) => route.isFirst);
-        }
+        if (mounted) Navigator.popUntil(context, (route) => route.isFirst);
       } else {
+        // Post flow — forward to AddPostScreen which will upload the file
+        // AND the serialised edit metadata together.
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -557,9 +600,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
       return Scaffold(
         backgroundColor: Colors.black,
         body: Center(
-          child: Text('Something went wrong.\n${e.toString()}',
-              style: const TextStyle(color: Colors.white, fontSize: 12),
-              textAlign: TextAlign.center),
+          child: Text(
+            'Something went wrong.\n${e.toString()}',
+            style: const TextStyle(color: Colors.white, fontSize: 12),
+            textAlign: TextAlign.center,
+          ),
         ),
       );
     }
@@ -590,6 +635,7 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 child: IndexedStack(
                   index: isTrim ? 0 : 1,
                   children: [
+                    // ── Trim viewer ────────────────────────────────────
                     GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onTap: () async {
@@ -611,6 +657,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                         ]),
                       ),
                     ),
+
+                    // ── Preview with colour filter + rotation ──────────
                     SizedBox.expand(
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
@@ -643,6 +691,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   ],
                 ),
               ),
+
+              // ── Overlay layer (strokes + text) ───────────────────────
               if (!isTrim)
                 Positioned.fill(
                   child: RepaintBoundary(
@@ -664,6 +714,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     ),
                   ),
                 ),
+
+              // ── Draw capture layer ───────────────────────────────────
               if (!isTrim && isDrawActive)
                 Positioned.fill(
                   child: GestureDetector(
@@ -674,10 +726,14 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                     child: const SizedBox.expand(),
                   ),
                 ),
+
+              // ── Play icon when paused ────────────────────────────────
               if (!isTrim && !isDrawActive && !_isPlaying)
                 const Center(
                     child: Icon(Icons.play_circle_outline,
                         color: Colors.white54, size: 64)),
+
+              // ── Draw tool indicator ──────────────────────────────────
               if (isDrawActive)
                 Positioned(
                   bottom: 12,
@@ -703,14 +759,18 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           ),
                         ),
                         const SizedBox(width: 8),
-                        Text(_drawTool.label,
-                            style: TextStyle(
-                                color: Colors.white.withOpacity(0.8),
-                                fontSize: 12)),
+                        Text(
+                          _drawTool.label,
+                          style: TextStyle(
+                              color: Colors.white.withOpacity(0.8),
+                              fontSize: 12),
+                        ),
                       ]),
                     ),
                   ),
                 ),
+
+              // ── Trash zone during drag ───────────────────────────────
               if (_isDragging)
                 Positioned(
                   bottom: 0,
@@ -720,6 +780,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                 ),
             ]),
           ),
+
+          // ── Tool panel ───────────────────────────────────────────────
           Container(
             height: _panelH,
             color: Colors.black,
@@ -727,6 +789,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
           ),
           SizedBox(height: botPad),
         ]),
+
+        // ── Text entry full-screen overlay ───────────────────────────────
         if (_isTyping)
           Positioned.fill(
             child: TextEntryOverlay(
@@ -784,19 +848,23 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
                   decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20)),
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
                   child: _isProcessing
                       ? const SizedBox(
                           width: 18,
                           height: 18,
                           child: CircularProgressIndicator(
-                              color: Colors.black, strokeWidth: 2))
-                      : Text(_isProfileFlow ? 'Done' : 'Next',
+                              color: Colors.black, strokeWidth: 2),
+                        )
+                      : Text(
+                          _isProfileFlow ? 'Done' : 'Next',
                           style: const TextStyle(
                               color: Colors.black,
                               fontSize: 14,
-                              fontWeight: FontWeight.w700)),
+                              fontWeight: FontWeight.w700),
+                        ),
                 ),
               ),
             ],
@@ -843,11 +911,13 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           width: isActive ? 1.5 : 1.0,
                         ),
                       ),
-                      child: Icon(_toolIcon(tool),
-                          color: isActive
-                              ? Colors.white
-                              : Colors.white.withOpacity(0.6),
-                          size: 22),
+                      child: Icon(
+                        _toolIcon(tool),
+                        color: isActive
+                            ? Colors.white
+                            : Colors.white.withOpacity(0.6),
+                        size: 22,
+                      ),
                     ),
                     if (showBadge)
                       Positioned(
@@ -866,15 +936,17 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                       ),
                   ]),
                   const SizedBox(height: 5),
-                  Text(_toolLabel(tool),
-                      style: TextStyle(
-                        color: isActive
-                            ? Colors.white
-                            : Colors.white.withOpacity(0.48),
-                        fontSize: 10,
-                        fontWeight:
-                            isActive ? FontWeight.w600 : FontWeight.normal,
-                      )),
+                  Text(
+                    _toolLabel(tool),
+                    style: TextStyle(
+                      color: isActive
+                          ? Colors.white
+                          : Colors.white.withOpacity(0.48),
+                      fontSize: 10,
+                      fontWeight:
+                          isActive ? FontWeight.w600 : FontWeight.normal,
+                    ),
+                  ),
                 ]),
               ),
             );
@@ -916,9 +988,11 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
         );
       default:
         return Center(
-          child: Text('Select a tool above',
-              style: TextStyle(
-                  color: Colors.white.withOpacity(0.22), fontSize: 13)),
+          child: Text(
+            'Select a tool above',
+            style:
+                TextStyle(color: Colors.white.withOpacity(0.22), fontSize: 13),
+          ),
         );
     }
   }
@@ -974,7 +1048,8 @@ class _VideoEditScreenState extends State<VideoEditScreen> {
                           width: 14,
                           height: 14,
                           child: CircularProgressIndicator(
-                              color: Colors.black, strokeWidth: 2))
+                              color: Colors.black, strokeWidth: 2),
+                        )
                       : const Text(
                           'Save',
                           style: TextStyle(
