@@ -280,7 +280,6 @@ class _PostCardState extends State<PostCard>
 
   /// Parses video_edit_metadata from the post snap into a VideoEditResult.
   /// Returns null if the post has no edits or the data is malformed.
-  /// File('') is a safe placeholder — the viewer path never accesses videoFile.
   VideoEditResult? _parseEditResult() {
     final raw = widget.snap['video_edit_metadata'];
     if (raw == null) return null;
@@ -312,8 +311,7 @@ class _PostCardState extends State<PostCard>
     _tickAnim =
         CurvedAnimation(parent: _tickAnimController, curve: Curves.easeOut);
 
-    // Parse edit metadata once so _buildVideoPlayer can use it without
-    // re-parsing on every rebuild.
+    // Parse edit metadata once so _buildVideoPlayer can use it without re-parsing.
     _editResult = _parseEditResult();
 
     _localRatings = [];
@@ -1416,13 +1414,12 @@ class _PostCardState extends State<PostCard>
 
   // =========================================================================
   // VIDEO PLAYER — applies filter, rotation, draw strokes, text overlays
-  // from video_edit_metadata so viewers see the same result as the creator.
+  // with proper scaling for letterboxed videos
   // =========================================================================
   Widget _buildVideoPlayer(_ColorSet colors) {
     final VideoEditResult? er = _editResult;
 
     // Combined colour matrix: filter preset × adjustment sliders.
-    // Identity matrix is used when no edit metadata is present.
     final List<double> matrix = er != null
         ? er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix)
         : [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
@@ -1438,23 +1435,100 @@ class _PostCardState extends State<PostCard>
           if (_isVideoInitialized)
             GestureDetector(
               onTap: _toggleVideoPlayback,
-              child: ColorFiltered(
-                colorFilter: ColorFilter.matrix(matrix),
-                child: Transform.rotate(
-                  angle: quarters * math.pi / 2,
-                  child: SizedBox(
-                    width: double.infinity,
-                    height: double.infinity,
-                    child: FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        width: _videoController!.value.size.width,
-                        height: _videoController!.value.size.height,
-                        child: VideoPlayer(_videoController!),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // Calculate the actual video display rectangle (letterbox/pillarbox)
+                  final videoAspect = _videoController!.value.aspectRatio;
+                  final containerAspect =
+                      constraints.maxWidth / constraints.maxHeight;
+
+                  double displayWidth, displayHeight;
+                  if (videoAspect > containerAspect) {
+                    // Video is wider than container – height matches, width overflows
+                    displayHeight = constraints.maxHeight;
+                    displayWidth = displayHeight * videoAspect;
+                  } else {
+                    // Video is taller – width matches, height overflows
+                    displayWidth = constraints.maxWidth;
+                    displayHeight = displayWidth / videoAspect;
+                  }
+
+                  // Offsets for centering
+                  final offsetX = (constraints.maxWidth - displayWidth) / 2;
+                  final offsetY = (constraints.maxHeight - displayHeight) / 2;
+
+                  return Stack(
+                    children: [
+                      // The video itself, centered
+                      Positioned(
+                        left: offsetX,
+                        top: offsetY,
+                        width: displayWidth,
+                        height: displayHeight,
+                        child: ColorFiltered(
+                          colorFilter: ColorFilter.matrix(matrix),
+                          child: Transform.rotate(
+                            angle: quarters * math.pi / 2,
+                            child: FittedBox(
+                              fit: BoxFit.contain,
+                              child: SizedBox(
+                                width: _videoController!.value.size.width,
+                                height: _videoController!.value.size.height,
+                                child: VideoPlayer(_videoController!),
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ),
+                      // ── Draw strokes overlay (scaled) ─────────────────
+                      if (er != null && er.strokes.isNotEmpty)
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: CustomPaint(
+                              painter: _ScaledOverlayPainter(
+                                strokes: er.strokes,
+                                displayRect: Rect.fromLTWH(
+                                  offsetX,
+                                  offsetY,
+                                  displayWidth,
+                                  displayHeight,
+                                ),
+                                videoSize: Size(
+                                  _videoController!.value.size.width,
+                                  _videoController!.value.size.height,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      // ── Text overlays (scaled) ────────────────────────
+                      if (er != null && er.overlays.isNotEmpty)
+                        ...er.overlays.map((overlay) {
+                          // Convert normalized (0-1) editor coordinates to display rectangle
+                          final double left =
+                              offsetX + (overlay.position.dx * displayWidth);
+                          final double top =
+                              offsetY + (overlay.position.dy * displayHeight);
+                          // Scale font size proportionally
+                          final double scale = displayWidth /
+                              _videoController!.value.size.width;
+                          final scaledOverlay = overlay.copyWith(
+                              fontSize: overlay.fontSize * scale);
+                          return Positioned(
+                            left: left.clamp(
+                                offsetX, offsetX + displayWidth - 10),
+                            top: top.clamp(offsetY, offsetY + displayHeight - 10),
+                            child: Stack(clipBehavior: Clip.none, children: [
+                              Text(overlay.text,
+                                  style: overlayShadowStyle(scaledOverlay)),
+                              Text(overlay.text,
+                                  style: overlayTextStyle(scaledOverlay)),
+                            ]),
+                          );
+                        }),
+                    ],
+                  );
+                },
               ),
             )
           else if (_isVideoLoading)
@@ -1486,44 +1560,6 @@ class _PostCardState extends State<PostCard>
                     Text('Video not available',
                         style: TextStyle(color: Colors.grey[300]!)),
                   ],
-                ),
-              ),
-            ),
-
-          // ── Draw strokes overlay ─────────────────────────────────────
-          if (er != null && er.strokes.isNotEmpty)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(
-                  painter: DrawingPainter(
-                    strokes: er.strokes,
-                    currentStroke: null,
-                  ),
-                ),
-              ),
-            ),
-
-          // ── Text overlays ────────────────────────────────────────────
-          if (er != null && er.overlays.isNotEmpty)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final double w = constraints.maxWidth;
-                    final double h = constraints.maxHeight;
-                    return Stack(
-                      children: er.overlays.map((o) {
-                        return Positioned(
-                          left: (o.position.dx * w).clamp(0.0, w - 10),
-                          top: (o.position.dy * h).clamp(0.0, h - 10),
-                          child: Stack(clipBehavior: Clip.none, children: [
-                            Text(o.text, style: overlayShadowStyle(o)),
-                            Text(o.text, style: overlayTextStyle(o)),
-                          ]),
-                        );
-                      }).toList(),
-                    );
-                  },
                 ),
               ),
             ),
@@ -1618,4 +1654,44 @@ class _PostCardState extends State<PostCard>
       ),
     );
   }
+}
+
+// =============================================================================
+// SCALED OVERLAY PAINTER
+// =============================================================================
+class _ScaledOverlayPainter extends CustomPainter {
+  final List<DrawStroke> strokes;
+  final Rect displayRect;
+  final Size videoSize;
+
+  _ScaledOverlayPainter({
+    required this.strokes,
+    required this.displayRect,
+    required this.videoSize,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (strokes.isEmpty) return;
+
+    // Scale factor from video's original size to display rectangle
+    final scaleX = displayRect.width / videoSize.width;
+    final scaleY = displayRect.height / videoSize.height;
+
+    canvas.save();
+    canvas.translate(displayRect.left, displayRect.top);
+    canvas.scale(scaleX, scaleY);
+
+    // Use the existing DrawingPainter to render strokes
+    DrawingPainter(strokes: strokes, currentStroke: null)
+        .paint(canvas, videoSize);
+
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_ScaledOverlayPainter old) =>
+      old.strokes != strokes ||
+      old.displayRect != displayRect ||
+      old.videoSize != videoSize;
 }
