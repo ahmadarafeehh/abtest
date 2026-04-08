@@ -152,10 +152,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   String errorMessage = '';
   final SupabaseProfileMethods _profileMethods = SupabaseProfileMethods();
 
-  // ── No-posts nudge timer ─────────────────────────────────────────────
   Timer? _noPostNudgeTimer;
   bool _nudgeSent = false;
-  // ─────────────────────────────────────────────────────────────────────
 
   List<dynamic> _galleries = [];
   int _selectedTabIndex = 0;
@@ -197,6 +195,14 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         l.endsWith('.3gp') ||
         l.contains('/video/') ||
         l.contains('video=true');
+  }
+
+  // ── Safely extract video_edit_metadata as Map<String,dynamic>? ──────────
+  Map<String, dynamic>? _extractEditMetadata(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return null;
   }
 
   @override
@@ -494,10 +500,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
       final postsLimit =
           _isFirstLoad ? _initialPostsLimit : _subsequentPostsLimit;
 
+      // ── FIXED: include video_edit_metadata in the select ──────────────
       final initialPosts = await _supabase
           .from('posts')
           .select(
-              'postId, postUrl, description, datePublished, uid, viewers_count')
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(0, postsLimit - 1);
@@ -528,9 +535,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         return;
       }
 
-      // ── Read A/B test flag for nudge timer (view count removed) ──────
       final bool isTestUser = userResponse['test'] == true;
-      // ─────────────────────────────────────────────────────────────────
 
       final followersResponse = await _supabase
           .from('user_followers')
@@ -587,7 +592,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
           _isFirstLoad = false;
         });
 
-        // Start 1-minute nudge timer for test users with no posts
         if (isTestUser && totalPostCount == 0) {
           _startNoPostNudgeTimer();
         }
@@ -615,16 +619,10 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     }
   }
 
-  // ===========================================================================
-  // NO-POST NUDGE — fires after 1 minute if test user has no posts
-  // ===========================================================================
-
   void _startNoPostNudgeTimer() {
-    // Only start once per session
     if (_nudgeSent || _noPostNudgeTimer != null) return;
     _noPostNudgeTimer = Timer(const Duration(minutes: 1), () async {
       if (!mounted || _nudgeSent) return;
-      // Double-check post count hasn't changed
       if (postCount > 0) return;
       _nudgeSent = true;
       try {
@@ -643,10 +641,11 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     if (!_hasMorePosts || _isLoadingMore) return;
     setState(() => _isLoadingMore = true);
     try {
+      // ── FIXED: include video_edit_metadata in the select ──────────────
       final newPosts = await _supabase
           .from('posts')
           .select(
-              'postId, postUrl, description, datePublished, uid, viewers_count')
+              'postId, postUrl, description, datePublished, uid, viewers_count, video_edit_metadata')
           .eq('uid', widget.uid)
           .order('datePublished', ascending: false)
           .range(_postsOffset, _postsOffset + _subsequentPostsLimit - 1);
@@ -984,7 +983,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
   }
 
   Widget _buildPostsGrid(_ColorSet colors) {
-    // Empty state — no posts yet
     if (_displayedPosts.isEmpty && !_isLoadingMore) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 32),
@@ -1039,10 +1037,7 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               ),
               child: const Text(
                 'Upload',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                ),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
               ),
             ),
           ],
@@ -1070,7 +1065,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== ADD POST — opens CustomCameraScreen directly ==========
   Widget _buildAddPostButton(_ColorSet colors) {
     return GestureDetector(
       onTap: () {
@@ -1098,7 +1092,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
     );
   }
 
-  // ========== POST ITEM — view count badge removed ==========
   Widget _buildPostItem(Map<String, dynamic> post, _ColorSet colors) {
     final postUrl = post['postUrl'] ?? '';
     final isVideo = _isVideoFile(postUrl);
@@ -1121,6 +1114,8 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
               profImage: userData['photoUrl']?.toString() ?? '',
               onPostDeleted: () async => getData(),
               datePublished: post['datePublished']?.toString() ?? '',
+              // ── FIXED: pass video_edit_metadata ──────────────────────
+              videoEditMetadata: _extractEditMetadata(post['video_edit_metadata']),
             ),
           ),
         ).then((_) {
@@ -1137,7 +1132,6 @@ class _CurrentUserProfileScreenState extends State<CurrentUserProfileScreen>
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // ── media ─────────────────────────────────────────────
             isVideo
                 ? _buildPostVideoPlayer(postUrl, colors)
                 : ClipRRect(
