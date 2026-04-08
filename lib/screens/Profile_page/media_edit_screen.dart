@@ -73,7 +73,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
 
   static const double _topBarH = 56.0;
   static const double _tabBarH = 48.0;
-  static const double _panelH  = 108.0;
+  static const double _panelH = 108.0;
 
   @override
   void initState() {
@@ -119,16 +119,16 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
     double left, top, right, bottom;
     if (imageRatio >= ratio) {
       final cropW = ih * ratio;
-      left   = ((iw - cropW) / 2) / iw;
-      right  = 1.0 - left;
-      top    = 0.0;
+      left = ((iw - cropW) / 2) / iw;
+      right = 1.0 - left;
+      top = 0.0;
       bottom = 1.0;
     } else {
       final cropH = iw / ratio;
-      top    = ((ih - cropH) / 2) / ih;
+      top = ((ih - cropH) / 2) / ih;
       bottom = 1.0 - top;
-      left   = 0.0;
-      right  = 1.0;
+      left = 0.0;
+      right = 1.0;
     }
     setState(() => _cropRect = Rect.fromLTRB(left, top, right, bottom));
   }
@@ -141,9 +141,9 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
     if (decoded == null) return bytes;
     final iw = decoded.width.toDouble();
     final ih = decoded.height.toDouble();
-    final x = (cropRect.left   * iw).round().clamp(0, decoded.width  - 1);
-    final y = (cropRect.top    * ih).round().clamp(0, decoded.height - 1);
-    final w = (cropRect.width  * iw).round().clamp(1, decoded.width  - x);
+    final x = (cropRect.left * iw).round().clamp(0, decoded.width - 1);
+    final y = (cropRect.top * ih).round().clamp(0, decoded.height - 1);
+    final w = (cropRect.width * iw).round().clamp(1, decoded.width - x);
     final h = (cropRect.height * ih).round().clamp(1, decoded.height - y);
     decoded = img.copyCrop(decoded, x: x, y: y, width: w, height: h);
     return Uint8List.fromList(img.encodeJpg(decoded, quality: 92));
@@ -154,25 +154,25 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
     if (isFull) {
       setState(() {
         _cropApplied = false;
-        _activeTab   = _Tab.filters;
+        _activeTab = _Tab.filters;
       });
       return;
     }
     final cropped = _applyCropEager(_editBytes, _cropRect);
     setState(() {
-      _editBytes   = cropped;
-      _cropRect    = const Rect.fromLTRB(0, 0, 1, 1);
-      _cropAspect  = CropAspect.free;
+      _editBytes = cropped;
+      _cropRect = const Rect.fromLTRB(0, 0, 1, 1);
+      _cropAspect = CropAspect.free;
       _cropApplied = true;
-      _activeTab   = _Tab.filters;
+      _activeTab = _Tab.filters;
     });
     await _loadImageDimensions();
   }
 
   void _resetCrop() {
     setState(() {
-      _cropRect    = const Rect.fromLTRB(0, 0, 1, 1);
-      _cropAspect  = CropAspect.free;
+      _cropRect = const Rect.fromLTRB(0, 0, 1, 1);
+      _cropAspect = CropAspect.free;
       _cropApplied = false;
     });
   }
@@ -295,8 +295,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
           as RenderRepaintBoundary;
       final uiImage = await boundary.toImage(
           pixelRatio: MediaQuery.of(context).devicePixelRatio);
-      final byteData =
-          await uiImage.toByteData(format: ui.ImageByteFormat.png);
+      final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.png);
       final pngBytes = byteData!.buffer.asUint8List();
       final decoded = img.decodePng(pngBytes);
       return decoded != null
@@ -326,8 +325,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
             context,
             MaterialPageRoute(
               builder: (_) => AddPostScreen(
-                  initialFile: rendered,
-                  onPostUploaded: widget.onPostUploaded),
+                  initialFile: rendered, onPostUploaded: widget.onPostUploaded),
             ));
       }
     } catch (_) {
@@ -344,13 +342,8 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
     final topPad = MediaQuery.of(context).padding.top;
     final botPad = MediaQuery.of(context).padding.bottom;
 
-    final imageH = screenSize.height -
-        topPad -
-        _topBarH -
-        _tabBarH -
-        _panelH -
-        botPad -
-        8;
+    final imageH =
+        screenSize.height - topPad - _topBarH - _tabBarH - _panelH - botPad - 8;
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -413,10 +406,8 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                   onTap: _activeTab != _Tab.draw
                       ? () => setState(() => _selectedOverlayIndex = null)
                       : null,
-                  onPanStart:
-                      _activeTab == _Tab.draw ? _onDrawStart : null,
-                  onPanUpdate:
-                      _activeTab == _Tab.draw ? _onDrawUpdate : null,
+                  onPanStart: _activeTab == _Tab.draw ? _onDrawStart : null,
+                  onPanUpdate: _activeTab == _Tab.draw ? _onDrawUpdate : null,
                   onPanEnd: _activeTab == _Tab.draw ? _onDrawEnd : null,
                   child: RepaintBoundary(
                     key: _previewKey,
@@ -458,8 +449,7 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                           return Positioned(
                             left: (o.position.dx * screenSize.width)
                                 .clamp(0, screenSize.width - 10),
-                            top: (o.position.dy * imageH)
-                                .clamp(0, imageH - 10),
+                            top: (o.position.dy * imageH).clamp(0, imageH - 10),
                             child: GestureDetector(
                               onTap: _activeTab != _Tab.draw
                                   ? () => setState(
@@ -493,23 +483,23 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                   ),
                 ),
               ),
-
               if (_activeTab == _Tab.crop)
                 Positioned.fill(
                   child: InteractiveCropOverlay(
                     cropRect: _cropRect,
                     onChanged: (r) {
                       setState(() {
-                        _cropRect   = r;
+                        _cropRect = r;
                         _cropAspect = CropAspect.free;
                       });
                     },
                   ),
                 ),
-
               if (_activeTab == _Tab.crop)
                 Positioned(
-                  bottom: 16, left: 24, right: 24,
+                  bottom: 16,
+                  left: 24,
+                  right: 24,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -522,7 +512,8 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                             color: Colors.black.withOpacity(0.55),
                             borderRadius: BorderRadius.circular(22),
                             border: Border.all(
-                                color: Colors.white.withOpacity(0.28), width: 1),
+                                color: Colors.white.withOpacity(0.28),
+                                width: 1),
                           ),
                           child: const Text('Reset',
                               style: TextStyle(
@@ -550,10 +541,11 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                     ],
                   ),
                 ),
-
               if (_activeTab == _Tab.draw)
                 Positioned(
-                    bottom: 12, left: 0, right: 0,
+                    bottom: 12,
+                    left: 0,
+                    right: 0,
                     child: Center(
                         child: Container(
                       padding: const EdgeInsets.symmetric(
@@ -578,24 +570,21 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                                 fontSize: 12)),
                       ]),
                     ))),
-
               if (_isDragging)
                 Positioned(
-                    bottom: 0, left: 0, right: 0,
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
                     child: TrashZone(isOverTrash: _isOverTrash)),
             ]),
           ),
 
           _buildTabBar(),
 
-          Container(
-              height: _panelH,
-              color: Colors.black,
-              child: _buildPanel()),
+          Container(height: _panelH, color: Colors.black, child: _buildPanel()),
 
           SizedBox(height: botPad),
         ]),
-
         if (_isTyping)
           Positioned.fill(
               child: TextEntryOverlay(
@@ -654,12 +643,13 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
                             size: 18),
                         if (tab == _Tab.crop && _cropApplied && !isActive)
                           Positioned(
-                            top: -2, right: -4,
+                            top: -2,
+                            right: -4,
                             child: Container(
-                              width: 6, height: 6,
+                              width: 6,
+                              height: 6,
                               decoration: const BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.white),
+                                  shape: BoxShape.circle, color: Colors.white),
                             ),
                           ),
                       ]),
@@ -735,25 +725,39 @@ class _MediaEditScreenState extends State<MediaEditScreen> {
 
   IconData _tabIcon(_Tab t) {
     switch (t) {
-      case _Tab.filters: return Icons.auto_fix_high_rounded;
-      case _Tab.adjust:  return Icons.tune_rounded;
-      case _Tab.crop:    return Icons.crop_rounded;
-      case _Tab.blur:    return Icons.blur_on_rounded;
-      case _Tab.draw:    return Icons.brush_rounded;
-      case _Tab.text:    return Icons.text_fields_rounded;
-      case _Tab.rotate:  return Icons.rotate_90_degrees_cw_rounded;
+      case _Tab.filters:
+        return Icons.auto_fix_high_rounded;
+      case _Tab.adjust:
+        return Icons.tune_rounded;
+      case _Tab.crop:
+        return Icons.crop_rounded;
+      case _Tab.blur:
+        return Icons.blur_on_rounded;
+      case _Tab.draw:
+        return Icons.brush_rounded;
+      case _Tab.text:
+        return Icons.text_fields_rounded;
+      case _Tab.rotate:
+        return Icons.rotate_90_degrees_cw_rounded;
     }
   }
 
   String _tabLabel(_Tab t) {
     switch (t) {
-      case _Tab.filters: return 'Filters';
-      case _Tab.adjust:  return 'Adjust';
-      case _Tab.crop:    return 'Crop';
-      case _Tab.blur:    return 'Blur';
-      case _Tab.draw:    return 'Draw';
-      case _Tab.text:    return 'Text';
-      case _Tab.rotate:  return 'Rotate';
+      case _Tab.filters:
+        return 'Filters';
+      case _Tab.adjust:
+        return 'Adjust';
+      case _Tab.crop:
+        return 'Crop';
+      case _Tab.blur:
+        return 'Blur';
+      case _Tab.draw:
+        return 'Draw';
+      case _Tab.text:
+        return 'Text';
+      case _Tab.rotate:
+        return 'Rotate';
     }
   }
 }
