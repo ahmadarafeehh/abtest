@@ -183,6 +183,9 @@ class SupabasePostsMethods {
     return res;
   }
 
+  // =========================================================================
+  // MODIFIED: uploadVideoPostFromFile now accepts editMetadata and stores it
+  // =========================================================================
   Future<String> uploadVideoPostFromFile(
     String description,
     File videoFile,
@@ -192,6 +195,7 @@ class SupabasePostsMethods {
     String gender, {
     int boostViews = 0,
     bool isBoosted = false,
+    Map<String, dynamic>? editMetadata, // <-- NEW: serialised VideoEditResult
   }) async {
     String res = "Some error occurred";
     try {
@@ -204,7 +208,8 @@ class SupabasePostsMethods {
         useUserFolder: true,
       );
 
-      await _supabase.from('posts').insert({
+      // Build insert payload
+      final Map<String, dynamic> payload = {
         'postId': postId,
         'description': description,
         'gender': gender,
@@ -217,7 +222,14 @@ class SupabasePostsMethods {
         'boost_views': boostViews,
         'is_boosted': isBoosted,
         'viewers_count': boostViews,
-      });
+      };
+
+      // Store edit metadata if provided (for video filters, text, draw, rotation)
+      if (editMetadata != null) {
+        payload['video_edit_metadata'] = editMetadata;
+      }
+
+      await _supabase.from('posts').insert(payload);
 
       res = "success";
     } catch (err) {
@@ -232,6 +244,7 @@ class SupabasePostsMethods {
           'gender': gender,
           'boostViews': boostViews,
           'isBoosted': isBoosted,
+          'hasEditMetadata': editMetadata != null,
         },
       );
     }
