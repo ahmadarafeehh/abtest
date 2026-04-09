@@ -581,10 +581,12 @@ class SupabaseProfileMethods {
   //
   // Data-retention policy: all user content
   // (posts, comments, ratings, follows, messages,
-  // notifications, profile record) is kept intact.
-  // Only the Firebase Auth user and/or Supabase
-  // Auth session are removed so the account can
-  // no longer be signed into.
+  // notifications, profile record) is kept intact
+  // in deleted_users (inserted by the caller before
+  // this method is invoked).
+  // The users row is removed here, after auth
+  // cleanup succeeds, so the account can no longer
+  // be signed into and the live users table stays clean.
   // =============================================
   Future<String> deleteEntireUserAccount(
       String uid, firebase_auth.AuthCredential? credential) async {
@@ -623,6 +625,11 @@ class SupabaseProfileMethods {
       if (isSupabaseUser) {
         await _supabase.auth.signOut();
       }
+
+      // Remove the users row now that it has been preserved in deleted_users
+      // by the caller (settings_screen._logDeletionData), and auth accounts
+      // have been successfully cleaned up above.
+      await _supabase.from('users').delete().eq('uid', uid);
 
       res = "success";
     } on firebase_auth.FirebaseAuthException catch (e) {
