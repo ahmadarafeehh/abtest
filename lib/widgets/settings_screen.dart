@@ -13,6 +13,7 @@ import 'package:Ratedly/resources/block_firestore_methods.dart';
 import 'package:Ratedly/widgets/blue_verification_screen.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:Ratedly/providers/user_provider.dart';
+import 'package:Ratedly/screens/terms_of_service_screen.dart'; // <-- Added import
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -905,6 +906,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       title: 'Sign Out',
                       icon: Icons.logout,
                       onTap: _signOut,
+                    ),
+                    // ────────────────────────────────────────────────────────
+                    // NEW: Terms of Service button (above Delete Account)
+                    // ────────────────────────────────────────────────────────
+                    _buildOptionTile(
+                      title: 'Terms of Service',
+                      icon: Icons.description,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (context) => const TermsOfServiceScreen()),
+                      ),
                     ),
                     _buildOptionTile(
                       title: 'Delete Account',
