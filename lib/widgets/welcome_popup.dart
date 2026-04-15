@@ -36,8 +36,9 @@ class WelcomePopup {
               ),
               const SizedBox(height: 14),
               Text(
-                'Ratedly is a place to rate images—not people. '
-                'Please keep your feedback respectful and constructive.',
+                'Ratedly is a platform for giving feedback on the visual appeal of images—not people. '
+                'Please keep your feedback respectful and constructive. '
+                'If you agree to these terms, press "Agree and Continue".',
                 style: TextStyle(
                   color: Colors.grey[300],
                   fontSize: 14,
@@ -56,8 +57,8 @@ class WelcomePopup {
                     if (ctx.mounted) Navigator.of(ctx).pop();
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF333333),
-                    foregroundColor: Colors.white,
+                    backgroundColor: Colors.grey[300],
+                    foregroundColor: const Color(0xFF1E1E1E),
                     padding: const EdgeInsets.symmetric(vertical: 13),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
