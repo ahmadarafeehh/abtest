@@ -19,6 +19,8 @@ import 'package:Ratedly/services/debug_logger.dart';
 import 'package:Ratedly/screens/feed/feed_skeleton.dart';
 import 'package:Ratedly/services/feed_cache_service.dart';
 
+const String _prefsKeyHasSeenIntro = 'has_seen_ratedly_intro';
+
 Future<void> _logError({
   required String eventType,
   String? firebaseUid,
@@ -653,6 +655,42 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     );
   }
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // NEW: Show one‑time intro popup after onboarding completes
+  // ────────────────────────────────────────────────────────────────────────────
+  Future<void> _maybeShowRatedlyIntroPopup() async {
+    final prefs = await SharedPreferences.getInstance();
+    final hasSeen = prefs.getBool(_prefsKeyHasSeenIntro) ?? false;
+    if (hasSeen) return;
+
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text(
+            'What is Ratedly?',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          content: const Text(
+            'Ratedly is a place to rate images—not people. '
+            'Please keep your feedback respectful and constructive.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('Agree and Continue'),
+            ),
+          ],
+        );
+      },
+    );
+    await prefs.setBool(_prefsKeyHasSeenIntro, true);
+  }
+
   void _handleOnboardingComplete() {
     final elapsed = _tracker?.totalElapsedSeconds ?? 0;
     DebugLogger.logEvent(
@@ -660,6 +698,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     _tracker?.step('completed');
     if (mounted) setState(() => _onboardingComplete = true);
     _updateAuthCache(true);
+
+    // Show the one‑time intro popup after onboarding completes
+    _maybeShowRatedlyIntroPopup();
   }
 
   @override
@@ -694,20 +735,14 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     return const GetStartedPage();
   }
 
-  /// Returns [FeedSkeleton] for returning signed-in users (persisted userId
-  /// exists in cache), and the logo spinner for first-time / logged-out users.
   Widget _buildLoadingScreen() {
     final hasPersistedUser =
         FeedCacheService.getLastUserIdSync()?.isNotEmpty == true;
 
     if (hasPersistedUser) {
-      // A returning user is signing back in — show the feed skeleton so the
-      // experience is consistent with what _AppBootstrap shows during init.
       return const FeedSkeleton(isDark: true);
     }
 
-    // No persisted user — first-time open or logged-out state.
-    // Show the branded logo screen while auth resolves.
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       body: Center(
