@@ -1386,7 +1386,7 @@ class _PostCardState extends State<PostCard>
                         ),
                       )
                     : Text(
-                        'Rated ${_averageRating.toStringAsFixed(1)} by $_totalRatingsCount ${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
+                        'Avrg ${_averageRating.toStringAsFixed(1)} by $_totalRatingsCount ${_totalRatingsCount == 1 ? \'voter\' : \'voters\'}'
                         style: const TextStyle(
                           fontSize: 14,
                           color: Colors.white,
