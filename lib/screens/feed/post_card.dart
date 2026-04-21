@@ -1376,8 +1376,8 @@ class _PostCardState extends State<PostCard>
                 child: _totalRatingsCount == 0
                     ? Text(
                         _isTestUser
-                            ? 'Start the Rating'
-                            : 'Be the first to rate',
+                            ? 'Start the slider'
+                            : 'Be the first',
                         style: const TextStyle(
                           fontSize: 14,
                           color: Colors.white,
