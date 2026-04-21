@@ -8,6 +8,96 @@ import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
 
 // =============================================================================
+// HEART PATH HELPER  (shared by value indicator and rated display)
+// =============================================================================
+
+Path _heartPath(Offset center, double size) {
+  final double r = size / 2;
+  final double cx = center.dx;
+  final double cy = center.dy;
+  final path = Path();
+  // Start at bottom tip
+  path.moveTo(cx, cy + r * 0.85);
+  // Lower-left curve
+  path.cubicTo(cx - r * 0.1, cy + r * 0.45,
+               cx - r,        cy + r * 0.25,
+               cx - r,        cy - r * 0.10);
+  // Upper-left bump
+  path.cubicTo(cx - r,        cy - r * 0.60,
+               cx - r * 0.45, cy - r,
+               cx,            cy - r * 0.35);
+  // Upper-right bump
+  path.cubicTo(cx + r * 0.45, cy - r,
+               cx + r,        cy - r * 0.60,
+               cx + r,        cy - r * 0.10);
+  // Lower-right curve back to tip
+  path.cubicTo(cx + r,        cy + r * 0.25,
+               cx + r * 0.10, cy + r * 0.45,
+               cx,            cy + r * 0.85);
+  path.close();
+  return path;
+}
+
+// =============================================================================
+// HEART VALUE INDICATOR SHAPE
+// Replaces the default circle/teardrop tooltip that appears while sliding.
+// =============================================================================
+
+class _HeartValueIndicatorShape extends SliderComponentShape {
+  const _HeartValueIndicatorShape();
+
+  static const double _heartSize = 44.0;
+
+  @override
+  Size getPreferredSize(bool isEnabled, bool isDiscrete) =>
+      const Size(_heartSize, _heartSize);
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset center, {
+    required Animation<double> activationAnimation,
+    required Animation<double> enableAnimation,
+    required bool isDiscrete,
+    required TextPainter labelPainter,
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required TextDirection textDirection,
+    required double value,
+    required double textScaleFactor,
+    required Size sizeWithOverflow,
+  }) {
+    final double opacity = activationAnimation.value;
+    if (opacity == 0.0) return;
+
+    final canvas = context.canvas;
+
+    // Position the heart centred above the thumb with a small gap.
+    final heartCenter = Offset(
+      center.dx,
+      center.dy - _heartSize * 0.55 - 18,
+    );
+
+    // Draw filled red heart.
+    canvas.drawPath(
+      _heartPath(heartCenter, _heartSize),
+      Paint()
+        ..color = Colors.red.withOpacity(opacity)
+        ..style = PaintingStyle.fill,
+    );
+
+    // Draw the number label centred inside the heart.
+    labelPainter.paint(
+      canvas,
+      Offset(
+        heartCenter.dx - labelPainter.width / 2,
+        heartCenter.dy - labelPainter.height / 2,
+      ),
+    );
+  }
+}
+
+// =============================================================================
 // FALLING NUMBERS OVERLAY  (shown on perfect 10/10 for test group)
 // =============================================================================
 
@@ -313,7 +403,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
 
   bool get _effectiveShowGuidance => widget.showGuidance ?? _resolvedGuidance;
 
-  // ── existing controllers ──────────────────────────────────────────────────
+  // ── controllers ───────────────────────────────────────────────────────────
   late AnimationController _scaleController;
   late Animation<double> _scaleAnimation;
 
@@ -626,7 +716,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   // ── interaction ───────────────────────────────────────────────────────────
 
   void _onRatingChanged(double newRating) {
-    // Snap to nearest whole number
     final rounded = newRating.roundToDouble();
     if (_isNudging) _stopNudge();
     setState(() {
@@ -638,7 +727,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   }
 
   void _onRatingEnd(double rating) {
-    // Snap to nearest whole number
     final rounded = rating.roundToDouble();
     setState(() => _isDragging = false);
 
@@ -681,101 +769,37 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  // ── "You rated" button ────────────────────────────────────────────────────
+  // ── "You rated" heart display ─────────────────────────────────────────────
+  // Replaces the old pill button. Tapping it still triggers onEditRating.
 
   Widget _buildRatingButton() {
     return ScaleTransition(
       scale: _scaleAnimation,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final double buttonWidth =
-              (constraints.maxWidth * 0.6).clamp(200.0, 250.0);
-          return Container(
-            width: buttonWidth,
-            height: 40.0,
-            padding: const EdgeInsets.symmetric(horizontal: 10.0),
-            child:
-                _justSubmitted ? _buildShimmerButton() : _buildStaticButton(),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildStaticButton() {
-    return ElevatedButton(
-      onPressed: widget.onEditRating,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: Colors.black54,
-        elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        minimumSize: const Size(80, 32),
-      ),
-      child: FittedBox(
-        fit: BoxFit.scaleDown,
-        child: Text(
-          'You rated: ${widget.userRating.round()}',
-          style: const TextStyle(
-              fontSize: 13,
-              color: Colors.white,
-              fontWeight: FontWeight.w500,
-              fontFamily: 'Inter'),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildShimmerButton() {
-    return AnimatedBuilder(
-      animation: _shimmerAnimation,
-      builder: (context, child) {
-        return Container(
-          decoration: BoxDecoration(
-              color: Colors.black54, borderRadius: BorderRadius.circular(8)),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Stack(
-              children: [
-                child!,
-                Positioned.fill(
-                  child: FractionallySizedBox(
-                    widthFactor: 0.4,
-                    alignment: Alignment(_shimmerAnimation.value, 0),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Colors.transparent,
-                            Colors.white.withOpacity(0.25),
-                            Colors.transparent
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+      child: GestureDetector(
+        onTap: widget.onEditRating,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            const Icon(Icons.favorite, color: Colors.red, size: 56),
+            Text(
+              widget.userRating.round().toString(),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w900,
+                fontFamily: 'Inter',
+                height: 1.0,
+                decoration: TextDecoration.none,
+              ),
             ),
-          ),
-        );
-      },
-      child: Center(
-        child: Text(
-          'You rated: ${widget.userRating.round()}',
-          style: const TextStyle(
-              fontSize: 13,
-              color: Colors.white,
-              fontWeight: FontWeight.w500,
-              fontFamily: 'Inter'),
+          ],
         ),
       ),
     );
   }
 
-  // ── Heart rating display ──────────────────────────────────────────────────
+  // ── Inline heart rating (right of slider while dragging) ─────────────────
 
-  /// Shows the current whole-number rating overlaid on a red heart icon.
   Widget _buildHeartRating(double rating) {
     return Stack(
       alignment: Alignment.center,
@@ -813,7 +837,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Guidance chip ───────────────────────────────────────────
+            // ── Guidance chip ─────────────────────────────────────────
             AnimatedOpacity(
               opacity: _isNudging ? 1.0 : 0.0,
               duration: const Duration(milliseconds: 200),
@@ -845,21 +869,22 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                             margin: const EdgeInsets.only(right: 7),
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
-                              color: Colors.black.withOpacity(0.5 + 0.5 * glow),
+                              color: Colors.black
+                                  .withOpacity(0.5 + 0.5 * glow),
                               boxShadow: [
                                 BoxShadow(
-                                    color: Colors.black.withOpacity(0.2 * glow),
+                                    color: Colors.black
+                                        .withOpacity(0.2 * glow),
                                     blurRadius: 4,
                                     spreadRadius: 1)
                               ],
                             ),
                           ),
-                          // ── CHANGE 3: "Slide to rate" → "Slide the bar" ──
                           Text(
                             'Slide the bar',
                             style: TextStyle(
-                              color:
-                                  Colors.black.withOpacity(0.75 + 0.25 * glow),
+                              color: Colors.black
+                                  .withOpacity(0.75 + 0.25 * glow),
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
                               fontFamily: 'Inter',
@@ -873,12 +898,15 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                 ),
               ),
             ),
-            // ── Slider row with heart display ───────────────────────────
+            // ── Slider row with inline heart ──────────────────────────
             LayoutBuilder(
               builder: (context, constraints) {
                 return AnimatedBuilder(
-                  animation: Listenable.merge(
-                      [_nudgeGlow, _arrowBounceController, _nudgeController]),
+                  animation: Listenable.merge([
+                    _nudgeGlow,
+                    _arrowBounceController,
+                    _nudgeController,
+                  ]),
                   builder: (context, child) {
                     final double displayRating =
                         _isNudging ? _nudgeRating.value : _currentRating;
@@ -886,36 +914,51 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                     return Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // ── Slider ────────────────────────────────────────
                         Expanded(
                           child: SliderTheme(
                             data: SliderTheme.of(context).copyWith(
+                              // ── Heart tooltip while dragging ──────────
+                              valueIndicatorShape:
+                                  const _HeartValueIndicatorShape(),
+                              showValueIndicator:
+                                  ShowValueIndicator.always,
+                              valueIndicatorTextStyle: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w900,
+                                fontFamily: 'Inter',
+                                height: 1.0,
+                              ),
                               thumbShape: _effectiveShowGuidance
                                   ? _EmojiThumbShape(
                                       emoji: '👆',
                                       size: 30.0,
-                                      showArrow:
-                                          _isNudging && _effectiveShowGuidance,
+                                      showArrow: _isNudging &&
+                                          _effectiveShowGuidance,
                                       arrowBounce: _arrowBounce.value,
-                                      arrowOpacity:
-                                          (_isNudging && _effectiveShowGuidance)
-                                              ? 0.6 + 0.4 * _nudgeGlow.value
-                                              : 0.0,
+                                      arrowOpacity: (_isNudging &&
+                                              _effectiveShowGuidance)
+                                          ? 0.6 + 0.4 * _nudgeGlow.value
+                                          : 0.0,
                                     )
                                   : const RoundSliderThumbShape(
                                       enabledThumbRadius: 10.0),
-                              overlayShape: SliderComponentShape.noOverlay,
+                              overlayShape:
+                                  SliderComponentShape.noOverlay,
                               trackHeight: 3.0,
                               activeTrackColor: _isNudging
-                                  ? (_cachedSliderActiveColor ?? Colors.white)
+                                  ? (_cachedSliderActiveColor ??
+                                          Colors.white)
                                       .withOpacity(0.85)
                                   : _cachedSliderActiveColor,
-                              inactiveTrackColor: _cachedSliderInactiveColor,
+                              inactiveTrackColor:
+                                  _cachedSliderInactiveColor,
                             ),
                             child: Container(
                               decoration: _isNudging
                                   ? BoxDecoration(
-                                      borderRadius: BorderRadius.circular(12),
+                                      borderRadius:
+                                          BorderRadius.circular(12),
                                       boxShadow: [
                                         BoxShadow(
                                             color: Colors.white.withOpacity(
@@ -926,15 +969,14 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                                     )
                                   : const BoxDecoration(),
                               child: Slider(
-                                // ── CHANGE 1: 9 divisions → whole numbers 1–10
                                 value: displayRating.clamp(1.0, 10.0),
                                 min: 1,
                                 max: 10,
                                 divisions: 9,
-                                // Show whole number in label tooltip
                                 label: displayRating.round().toString(),
                                 activeColor: _isNudging
-                                    ? (_cachedSliderActiveColor ?? Colors.white)
+                                    ? (_cachedSliderActiveColor ??
+                                            Colors.white)
                                         .withOpacity(0.85)
                                     : _cachedSliderActiveColor,
                                 inactiveColor: _cachedSliderInactiveColor,
@@ -944,8 +986,8 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                             ),
                           ),
                         ),
-                        // ── CHANGE 1: Heart with whole-number rating ──────
                         const SizedBox(width: 4),
+                        // Inline heart showing the current whole number
                         _buildHeartRating(displayRating),
                       ],
                     );
