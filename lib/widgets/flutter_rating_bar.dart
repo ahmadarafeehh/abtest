@@ -139,8 +139,6 @@ class _FallingNumbersOverlayState extends State<_FallingNumbersOverlay>
 
               final scale = 0.4 + 0.6 * math.min(1.0, localT / 0.2);
 
-              // Use foreground Paint with stroke to make text appear
-              // genuinely thicker than FontWeight.w900 alone allows
               final strokePaint = Paint()
                 ..style = PaintingStyle.stroke
                 ..strokeWidth = n.fontSize * 0.12
@@ -161,7 +159,6 @@ class _FallingNumbersOverlayState extends State<_FallingNumbersOverlay>
                       angle: n.rotation,
                       child: Stack(
                         children: [
-                          // Stroke pass — gives the chunky bold outline
                           Text(
                             '10',
                             style: TextStyle(
@@ -172,7 +169,6 @@ class _FallingNumbersOverlayState extends State<_FallingNumbersOverlay>
                               foreground: strokePaint,
                             ),
                           ),
-                          // Fill pass — solid interior
                           Text(
                             '10',
                             style: TextStyle(
@@ -367,7 +363,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    _currentRating = widget.initialRating;
+    _currentRating = widget.initialRating.roundToDouble();
 
     _scaleController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 450));
@@ -597,8 +593,9 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         }
       });
       if (!_isDragging) {
-        _currentRating =
-            widget.userRating > 0 ? widget.userRating : widget.initialRating;
+        _currentRating = widget.userRating > 0
+            ? widget.userRating.roundToDouble()
+            : widget.initialRating.roundToDouble();
       }
     }
 
@@ -617,7 +614,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
 
     if (!_isDragging && !_isNudging) {
       if (widget.userRating != oldWidget.userRating) {
-        _currentRating = widget.userRating;
+        _currentRating = widget.userRating.roundToDouble();
       }
     }
 
@@ -629,25 +626,29 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   // ── interaction ───────────────────────────────────────────────────────────
 
   void _onRatingChanged(double newRating) {
+    // Snap to nearest whole number
+    final rounded = newRating.roundToDouble();
     if (_isNudging) _stopNudge();
     setState(() {
-      _currentRating = newRating;
+      _currentRating = rounded;
       _isDragging = true;
     });
-    widget.onRatingUpdate?.call(newRating);
+    widget.onRatingUpdate?.call(rounded);
     _pulseController.forward(from: 0.0).then((_) => _pulseController.reverse());
   }
 
   void _onRatingEnd(double rating) {
+    // Snap to nearest whole number
+    final rounded = rating.roundToDouble();
     setState(() => _isDragging = false);
 
-    if (rating >= 10.0 && _isTestGroup) {
+    if (rounded >= 10.0 && _isTestGroup) {
       Future.delayed(const Duration(milliseconds: 150), () {
         if (mounted) _triggerFallingTens();
       });
     }
 
-    widget.onRatingEnd(rating);
+    widget.onRatingEnd(rounded);
   }
 
   // ── colors ────────────────────────────────────────────────────────────────
@@ -714,7 +715,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
       child: FittedBox(
         fit: BoxFit.scaleDown,
         child: Text(
-          'You rated: ${widget.userRating.toStringAsFixed(1)}',
+          'You rated: ${widget.userRating.round()}',
           style: const TextStyle(
               fontSize: 13,
               color: Colors.white,
@@ -761,7 +762,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
       },
       child: Center(
         child: Text(
-          'You rated: ${widget.userRating.toStringAsFixed(1)}',
+          'You rated: ${widget.userRating.round()}',
           style: const TextStyle(
               fontSize: 13,
               color: Colors.white,
@@ -769,6 +770,29 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
               fontFamily: 'Inter'),
         ),
       ),
+    );
+  }
+
+  // ── Heart rating display ──────────────────────────────────────────────────
+
+  /// Shows the current whole-number rating overlaid on a red heart icon.
+  Widget _buildHeartRating(double rating) {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        const Icon(Icons.favorite, color: Colors.red, size: 38),
+        Text(
+          rating.round().toString(),
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+            fontFamily: 'Inter',
+            height: 1.0,
+            decoration: TextDecoration.none,
+          ),
+        ),
+      ],
     );
   }
 
@@ -789,6 +813,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Guidance chip ───────────────────────────────────────────
             AnimatedOpacity(
               opacity: _isNudging ? 1.0 : 0.0,
               duration: const Duration(milliseconds: 200),
@@ -829,8 +854,9 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                               ],
                             ),
                           ),
+                          // ── CHANGE 3: "Slide to rate" → "Slide the bar" ──
                           Text(
-                            'Slide to rate',
+                            'Slide the bar',
                             style: TextStyle(
                               color:
                                   Colors.black.withOpacity(0.75 + 0.25 * glow),
@@ -847,67 +873,81 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                 ),
               ),
             ),
+            // ── Slider row with heart display ───────────────────────────
             LayoutBuilder(
               builder: (context, constraints) {
                 return AnimatedBuilder(
                   animation: Listenable.merge(
                       [_nudgeGlow, _arrowBounceController, _nudgeController]),
                   builder: (context, child) {
-                    return SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        thumbShape: _effectiveShowGuidance
-                            ? _EmojiThumbShape(
-                                emoji: '👆',
-                                size: 30.0,
-                                showArrow: _isNudging && _effectiveShowGuidance,
-                                arrowBounce: _arrowBounce.value,
-                                arrowOpacity:
-                                    (_isNudging && _effectiveShowGuidance)
-                                        ? 0.6 + 0.4 * _nudgeGlow.value
-                                        : 0.0,
-                              )
-                            : const RoundSliderThumbShape(
-                                enabledThumbRadius: 10.0),
-                        overlayShape: SliderComponentShape.noOverlay,
-                        trackHeight: 3.0,
-                        activeTrackColor: _isNudging
-                            ? (_cachedSliderActiveColor ?? Colors.white)
-                                .withOpacity(0.85)
-                            : _cachedSliderActiveColor,
-                        inactiveTrackColor: _cachedSliderInactiveColor,
-                      ),
-                      child: Container(
-                        decoration: _isNudging
-                            ? BoxDecoration(
-                                borderRadius: BorderRadius.circular(12),
-                                boxShadow: [
-                                  BoxShadow(
-                                      color: Colors.white
-                                          .withOpacity(0.07 * _nudgeGlow.value),
-                                      blurRadius: 12,
-                                      spreadRadius: 2)
-                                ],
-                              )
-                            : const BoxDecoration(),
-                        child: Slider(
-                          value: _isNudging
-                              ? _nudgeRating.value.clamp(1.0, 10.0)
-                              : _currentRating,
-                          min: 1,
-                          max: 10,
-                          divisions: 100,
-                          label:
-                              (_isNudging ? _nudgeRating.value : _currentRating)
-                                  .toStringAsFixed(1),
-                          activeColor: _isNudging
-                              ? (_cachedSliderActiveColor ?? Colors.white)
-                                  .withOpacity(0.85)
-                              : _cachedSliderActiveColor,
-                          inactiveColor: _cachedSliderInactiveColor,
-                          onChanged: _onRatingChanged,
-                          onChangeEnd: _onRatingEnd,
+                    final double displayRating =
+                        _isNudging ? _nudgeRating.value : _currentRating;
+
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // ── Slider ────────────────────────────────────────
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              thumbShape: _effectiveShowGuidance
+                                  ? _EmojiThumbShape(
+                                      emoji: '👆',
+                                      size: 30.0,
+                                      showArrow:
+                                          _isNudging && _effectiveShowGuidance,
+                                      arrowBounce: _arrowBounce.value,
+                                      arrowOpacity:
+                                          (_isNudging && _effectiveShowGuidance)
+                                              ? 0.6 + 0.4 * _nudgeGlow.value
+                                              : 0.0,
+                                    )
+                                  : const RoundSliderThumbShape(
+                                      enabledThumbRadius: 10.0),
+                              overlayShape: SliderComponentShape.noOverlay,
+                              trackHeight: 3.0,
+                              activeTrackColor: _isNudging
+                                  ? (_cachedSliderActiveColor ?? Colors.white)
+                                      .withOpacity(0.85)
+                                  : _cachedSliderActiveColor,
+                              inactiveTrackColor: _cachedSliderInactiveColor,
+                            ),
+                            child: Container(
+                              decoration: _isNudging
+                                  ? BoxDecoration(
+                                      borderRadius: BorderRadius.circular(12),
+                                      boxShadow: [
+                                        BoxShadow(
+                                            color: Colors.white.withOpacity(
+                                                0.07 * _nudgeGlow.value),
+                                            blurRadius: 12,
+                                            spreadRadius: 2)
+                                      ],
+                                    )
+                                  : const BoxDecoration(),
+                              child: Slider(
+                                // ── CHANGE 1: 9 divisions → whole numbers 1–10
+                                value: displayRating.clamp(1.0, 10.0),
+                                min: 1,
+                                max: 10,
+                                divisions: 9,
+                                // Show whole number in label tooltip
+                                label: displayRating.round().toString(),
+                                activeColor: _isNudging
+                                    ? (_cachedSliderActiveColor ?? Colors.white)
+                                        .withOpacity(0.85)
+                                    : _cachedSliderActiveColor,
+                                inactiveColor: _cachedSliderInactiveColor,
+                                onChanged: _onRatingChanged,
+                                onChangeEnd: _onRatingEnd,
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
+                        // ── CHANGE 1: Heart with whole-number rating ──────
+                        const SizedBox(width: 4),
+                        _buildHeartRating(displayRating),
+                      ],
                     );
                   },
                 );
