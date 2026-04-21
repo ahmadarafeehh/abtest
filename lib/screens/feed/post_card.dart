@@ -278,8 +278,6 @@ class _PostCardState extends State<PostCard>
   // EDIT METADATA HELPER
   // =========================================================================
 
-  /// Parses video_edit_metadata from the post snap into a VideoEditResult.
-  /// Returns null if the post has no edits or the data is malformed.
   VideoEditResult? _parseEditResult() {
     final raw = widget.snap['video_edit_metadata'];
     if (raw == null) return null;
@@ -311,7 +309,6 @@ class _PostCardState extends State<PostCard>
     _tickAnim =
         CurvedAnimation(parent: _tickAnimController, curve: Curves.easeOut);
 
-    // Parse edit metadata once so _buildVideoPlayer can use it without re-parsing.
     _editResult = _parseEditResult();
 
     _localRatings = [];
@@ -1368,12 +1365,14 @@ class _PostCardState extends State<PostCard>
                   ],
                 ),
               ),
+              // ── Ratings summary badge ─────────────────────────────────
               Container(
                 decoration: BoxDecoration(
                   color: Colors.black54,
                   borderRadius: BorderRadius.circular(4),
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 child: _totalRatingsCount == 0
                     ? Text(
                         _isTestUser
@@ -1385,13 +1384,24 @@ class _PostCardState extends State<PostCard>
                           fontWeight: FontWeight.w500,
                         ),
                       )
-                    : Text(
-                        'Avrg ${_averageRating.toStringAsFixed(1)} by $_totalRatingsCount ${_totalRatingsCount == 1 ? \'voter\' : \'voters\'}'
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Colors.white,
-                          fontWeight: FontWeight.w500,
-                        ),
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.favorite,
+                            color: Colors.red,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${_averageRating.toStringAsFixed(1)} by $_totalRatingsCount ${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.white,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ),
               ),
             ],
@@ -1413,13 +1423,11 @@ class _PostCardState extends State<PostCard>
   }
 
   // =========================================================================
-  // VIDEO PLAYER — applies filter, rotation, draw strokes, text overlays
-  // with proper scaling for letterboxed videos
+  // VIDEO PLAYER
   // =========================================================================
   Widget _buildVideoPlayer(_ColorSet colors) {
     final VideoEditResult? er = _editResult;
 
-    // Combined colour matrix: filter preset × adjustment sliders.
     final List<double> matrix = er != null
         ? er.adjustments.combinedMatrix(kFilters[er.filterIndex].matrix)
         : [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
@@ -1431,35 +1439,29 @@ class _PostCardState extends State<PostCard>
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // ── Video with colour filter + rotation ──────────────────────
           if (_isVideoInitialized)
             GestureDetector(
               onTap: _toggleVideoPlayback,
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  // Calculate the actual video display rectangle (letterbox/pillarbox)
                   final videoAspect = _videoController!.value.aspectRatio;
                   final containerAspect =
                       constraints.maxWidth / constraints.maxHeight;
 
                   double displayWidth, displayHeight;
                   if (videoAspect > containerAspect) {
-                    // Video is wider than container – height matches, width overflows
                     displayHeight = constraints.maxHeight;
                     displayWidth = displayHeight * videoAspect;
                   } else {
-                    // Video is taller – width matches, height overflows
                     displayWidth = constraints.maxWidth;
                     displayHeight = displayWidth / videoAspect;
                   }
 
-                  // Offsets for centering
                   final offsetX = (constraints.maxWidth - displayWidth) / 2;
                   final offsetY = (constraints.maxHeight - displayHeight) / 2;
 
                   return Stack(
                     children: [
-                      // The video itself, centered
                       Positioned(
                         left: offsetX,
                         top: offsetY,
@@ -1480,7 +1482,6 @@ class _PostCardState extends State<PostCard>
                           ),
                         ),
                       ),
-                      // ── Draw strokes overlay (scaled) ─────────────────
                       if (er != null && er.strokes.isNotEmpty)
                         Positioned.fill(
                           child: IgnorePointer(
@@ -1501,15 +1502,12 @@ class _PostCardState extends State<PostCard>
                             ),
                           ),
                         ),
-                      // ── Text overlays (scaled) ────────────────────────
                       if (er != null && er.overlays.isNotEmpty)
                         ...er.overlays.map((overlay) {
-                          // Convert normalized (0-1) editor coordinates to display rectangle
                           final double left =
                               offsetX + (overlay.position.dx * displayWidth);
                           final double top =
                               offsetY + (overlay.position.dy * displayHeight);
-                          // Scale font size proportionally
                           final double scale = displayWidth /
                               _videoController!.value.size.width;
                           final scaledOverlay = overlay.copyWith(
@@ -1517,7 +1515,8 @@ class _PostCardState extends State<PostCard>
                           return Positioned(
                             left: left.clamp(
                                 offsetX, offsetX + displayWidth - 10),
-                            top: top.clamp(offsetY, offsetY + displayHeight - 10),
+                            top: top.clamp(
+                                offsetY, offsetY + displayHeight - 10),
                             child: Stack(clipBehavior: Clip.none, children: [
                               Text(overlay.text,
                                   style: overlayShadowStyle(scaledOverlay)),
@@ -1564,7 +1563,6 @@ class _PostCardState extends State<PostCard>
               ),
             ),
 
-          // ── Play button when paused ──────────────────────────────────
           if (_isVideoInitialized && !_isVideoPlaying)
             GestureDetector(
               onTap: _playVideo,
@@ -1674,7 +1672,6 @@ class _ScaledOverlayPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (strokes.isEmpty) return;
 
-    // Scale factor from video's original size to display rectangle
     final scaleX = displayRect.width / videoSize.width;
     final scaleY = displayRect.height / videoSize.height;
 
@@ -1682,7 +1679,6 @@ class _ScaledOverlayPainter extends CustomPainter {
     canvas.translate(displayRect.left, displayRect.top);
     canvas.scale(scaleX, scaleY);
 
-    // Use the existing DrawingPainter to render strokes
     DrawingPainter(strokes: strokes, currentStroke: null)
         .paint(canvas, videoSize);
 
