@@ -219,7 +219,6 @@ class _PostCardState extends State<PostCard>
   bool _isProfileVideoInitialized = false;
   bool _isProfileVideoMuted = true;
 
-  // Parsed once in initState from widget.snap['video_edit_metadata']
   VideoEditResult? _editResult;
 
   final ApiService _apiService = ApiService();
@@ -1324,10 +1323,12 @@ class _PostCardState extends State<PostCard>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Instagram-style rating slider ─────────────────────────────
           RatingBar(
             initialRating: _userRating ?? 5.0,
             hasRated: _userRating != null,
             userRating: _userRating ?? 0.0,
+            averageRating: _averageRating > 0 ? _averageRating : 5.0,
             onRatingEnd: _handleRatingSubmitted,
             showSlider: _showSlider,
             onEditRating: _handleEditRating,
@@ -1335,74 +1336,51 @@ class _PostCardState extends State<PostCard>
           const SizedBox(height: 8),
           Row(
             children: [
+              // ── Username ─────────────────────────────────────────────
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    GestureDetector(
-                      onTap: _navigateToProfile,
-                      child: VerifiedUsernameWidget(
-                        username: _ownerUsername ??
-                            widget.snap['username']?.toString() ??
-                            'Unknown',
-                        uid: widget.snap['uid']?.toString() ?? '',
-                        countryCode: widget.snap['country']?.toString(),
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontFamily: 'Inter',
-                          shadows: [
-                            Shadow(
-                              offset: const Offset(1.0, 1.0),
-                              blurRadius: 3.0,
-                              color: Colors.black.withOpacity(0.8),
-                            ),
-                          ],
+                child: GestureDetector(
+                  onTap: _navigateToProfile,
+                  child: VerifiedUsernameWidget(
+                    username: _ownerUsername ??
+                        widget.snap['username']?.toString() ??
+                        'Unknown',
+                    uid: widget.snap['uid']?.toString() ?? '',
+                    countryCode: widget.snap['country']?.toString(),
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontFamily: 'Inter',
+                      shadows: [
+                        Shadow(
+                          offset: const Offset(1.0, 1.0),
+                          blurRadius: 3.0,
+                          color: Colors.black.withOpacity(0.8),
                         ),
-                      ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
-              // ── Ratings summary badge ─────────────────────────────────
+              // ── Voter count only (no average, no icons) ───────────────
               Container(
                 decoration: BoxDecoration(
                   color: Colors.black54,
                   borderRadius: BorderRadius.circular(4),
                 ),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: _totalRatingsCount == 0
-                    ? Text(
-                        _isTestUser
-                            ? 'Start the slider'
-                            : 'Be the first',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Colors.white,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      )
-                    : Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.favorite,
-                            color: Colors.red,
-                            size: 16,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${_averageRating.toStringAsFixed(1)} by $_totalRatingsCount ${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.white,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Text(
+                  _totalRatingsCount == 0
+                      ? (_isTestUser
+                          ? 'Start the Rating'
+                          : 'Be the first to rate')
+                      : '$_totalRatingsCount ${_totalRatingsCount == 1 ? 'voter' : 'voters'}',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
               ),
             ],
           ),
@@ -1508,8 +1486,8 @@ class _PostCardState extends State<PostCard>
                               offsetX + (overlay.position.dx * displayWidth);
                           final double top =
                               offsetY + (overlay.position.dy * displayHeight);
-                          final double scale = displayWidth /
-                              _videoController!.value.size.width;
+                          final double scale =
+                              displayWidth / _videoController!.value.size.width;
                           final scaledOverlay = overlay.copyWith(
                               fontSize: overlay.fontSize * scale);
                           return Positioned(
@@ -1562,7 +1540,6 @@ class _PostCardState extends State<PostCard>
                 ),
               ),
             ),
-
           if (_isVideoInitialized && !_isVideoPlaying)
             GestureDetector(
               onTap: _playVideo,
