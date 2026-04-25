@@ -1,4 +1,4 @@
-// RatingBar widget with animations + looping nudge + bouncing arrow
+// RatingBar widget – Instagram story slider style
 // + falling "10" celebration for perfect score (test group only)
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -6,96 +6,6 @@ import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ratedly/providers/user_provider.dart';
 import 'package:Ratedly/utils/theme_provider.dart';
-
-// =============================================================================
-// HEART PATH HELPER  (shared by value indicator and rated display)
-// =============================================================================
-
-Path _heartPath(Offset center, double size) {
-  final double r = size / 2;
-  final double cx = center.dx;
-  final double cy = center.dy;
-  final path = Path();
-  // Start at bottom tip
-  path.moveTo(cx, cy + r * 0.85);
-  // Lower-left curve
-  path.cubicTo(cx - r * 0.1, cy + r * 0.45,
-               cx - r,        cy + r * 0.25,
-               cx - r,        cy - r * 0.10);
-  // Upper-left bump
-  path.cubicTo(cx - r,        cy - r * 0.60,
-               cx - r * 0.45, cy - r,
-               cx,            cy - r * 0.35);
-  // Upper-right bump
-  path.cubicTo(cx + r * 0.45, cy - r,
-               cx + r,        cy - r * 0.60,
-               cx + r,        cy - r * 0.10);
-  // Lower-right curve back to tip
-  path.cubicTo(cx + r,        cy + r * 0.25,
-               cx + r * 0.10, cy + r * 0.45,
-               cx,            cy + r * 0.85);
-  path.close();
-  return path;
-}
-
-// =============================================================================
-// HEART VALUE INDICATOR SHAPE
-// Replaces the default circle/teardrop tooltip that appears while sliding.
-// =============================================================================
-
-class _HeartValueIndicatorShape extends SliderComponentShape {
-  const _HeartValueIndicatorShape();
-
-  static const double _heartSize = 44.0;
-
-  @override
-  Size getPreferredSize(bool isEnabled, bool isDiscrete) =>
-      const Size(_heartSize, _heartSize);
-
-  @override
-  void paint(
-    PaintingContext context,
-    Offset center, {
-    required Animation<double> activationAnimation,
-    required Animation<double> enableAnimation,
-    required bool isDiscrete,
-    required TextPainter labelPainter,
-    required RenderBox parentBox,
-    required SliderThemeData sliderTheme,
-    required TextDirection textDirection,
-    required double value,
-    required double textScaleFactor,
-    required Size sizeWithOverflow,
-  }) {
-    final double opacity = activationAnimation.value;
-    if (opacity == 0.0) return;
-
-    final canvas = context.canvas;
-
-    // Position the heart centred above the thumb with a small gap.
-    final heartCenter = Offset(
-      center.dx,
-      center.dy - _heartSize * 0.55 - 18,
-    );
-
-    // Draw filled red heart.
-    canvas.drawPath(
-      _heartPath(heartCenter, _heartSize),
-      Paint()
-        ..color = Colors.red.withOpacity(opacity)
-        ..style = PaintingStyle.fill,
-    );
-
-    // Draw the number label centred inside the heart.
-    labelPainter.paint(
-      canvas,
-      Offset(
-        heartCenter.dx - labelPainter.width / 2,
-        heartCenter.dy - labelPainter.height / 2,
-      ),
-    );
-  }
-}
 
 // =============================================================================
 // FALLING NUMBERS OVERLAY  (shown on perfect 10/10 for test group)
@@ -152,10 +62,6 @@ class _FallingNumbersOverlayState extends State<_FallingNumbersOverlay>
             const Color(0xFFBDBDBD),
             const Color(0xFFF5F5F5),
             const Color(0xFFE0E0E0),
-            const Color(0xFFCFCFCF),
-            const Color(0xFFD9D9D9),
-            const Color(0xFFF0F0F0),
-            const Color(0xFFB0B0B0),
           ]
         : [
             const Color(0xFF212121),
@@ -164,10 +70,6 @@ class _FallingNumbersOverlayState extends State<_FallingNumbersOverlay>
             const Color(0xFF303030),
             const Color(0xFF1A1A1A),
             const Color(0xFF333333),
-            const Color(0xFF4A4A4A),
-            const Color(0xFF222222),
-            const Color(0xFF2C2C2C),
-            const Color(0xFF3D3D3D),
           ];
 
     _numbers = List.generate(_count, (i) {
@@ -214,7 +116,6 @@ class _FallingNumbersOverlayState extends State<_FallingNumbersOverlay>
               final yStart = -80.0;
               final yEnd = size.height + 80.0;
               final y = yStart + (yEnd - yStart) * localT;
-
               final wobble = math.sin(localT * math.pi * 3) * 12;
               final x = n.xFraction * size.width + wobble;
 
@@ -249,26 +150,20 @@ class _FallingNumbersOverlayState extends State<_FallingNumbersOverlay>
                       angle: n.rotation,
                       child: Stack(
                         children: [
-                          Text(
-                            '10',
-                            style: TextStyle(
-                              fontSize: n.fontSize,
-                              fontWeight: FontWeight.w900,
-                              fontFamily: 'Inter',
-                              decoration: TextDecoration.none,
-                              foreground: strokePaint,
-                            ),
-                          ),
-                          Text(
-                            '10',
-                            style: TextStyle(
-                              fontSize: n.fontSize,
-                              fontWeight: FontWeight.w900,
-                              fontFamily: 'Inter',
-                              decoration: TextDecoration.none,
-                              foreground: fillPaint,
-                            ),
-                          ),
+                          Text('10',
+                              style: TextStyle(
+                                  fontSize: n.fontSize,
+                                  fontWeight: FontWeight.w900,
+                                  fontFamily: 'Inter',
+                                  decoration: TextDecoration.none,
+                                  foreground: strokePaint)),
+                          Text('10',
+                              style: TextStyle(
+                                  fontSize: n.fontSize,
+                                  fontWeight: FontWeight.w900,
+                                  fontFamily: 'Inter',
+                                  decoration: TextDecoration.none,
+                                  foreground: fillPaint)),
                         ],
                       ),
                     ),
@@ -284,23 +179,13 @@ class _FallingNumbersOverlayState extends State<_FallingNumbersOverlay>
 }
 
 // =============================================================================
-// EMOJI THUMB SHAPE
+// HEART-EYES EMOJI THUMB  – fixed size, no scaling
 // =============================================================================
 
-class _EmojiThumbShape extends SliderComponentShape {
-  final String emoji;
+class _HeartEyesThumbShape extends SliderComponentShape {
   final double size;
-  final double arrowBounce;
-  final double arrowOpacity;
-  final bool showArrow;
 
-  const _EmojiThumbShape({
-    this.emoji = '👆',
-    this.size = 30.0,
-    this.arrowBounce = 0.0,
-    this.arrowOpacity = 0.0,
-    this.showArrow = false,
-  });
+  const _HeartEyesThumbShape({this.size = 32.0});
 
   @override
   Size getPreferredSize(bool isEnabled, bool isDiscrete) => Size(size, size);
@@ -320,45 +205,38 @@ class _EmojiThumbShape extends SliderComponentShape {
     required double textScaleFactor,
     required Size sizeWithOverflow,
   }) {
-    final canvas = context.canvas;
-
-    if (showArrow && arrowOpacity > 0) {
-      const arrowSize = 48.0;
-      const arrowScaleY = 2.2;
-      const arrowH = arrowSize * arrowScaleY;
-      final arrowTop = center.dy - size / 2 - arrowH - 8 - arrowBounce;
-      final arrowCenter = Offset(center.dx, arrowTop + arrowH / 2);
-
-      final arrowPainter = TextPainter(
-        text: TextSpan(
-          text: '↓',
-          style: TextStyle(
-            fontSize: arrowSize,
-            height: 1.0,
-            color: Colors.white.withOpacity(arrowOpacity),
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-
-      canvas.save();
-      canvas.translate(arrowCenter.dx, arrowCenter.dy);
-      canvas.scale(1.0, arrowScaleY);
-      canvas.translate(-arrowCenter.dx, -arrowCenter.dy);
-      arrowPainter.paint(
-        canvas,
-        Offset(arrowCenter.dx - arrowPainter.width / 2,
-            arrowCenter.dy - arrowPainter.height / 2),
-      );
-      canvas.restore();
-    }
-
     final tp = TextPainter(
-      text:
-          TextSpan(text: emoji, style: TextStyle(fontSize: size, height: 1.0)),
+      text: TextSpan(text: '😍', style: TextStyle(fontSize: size, height: 1.0)),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+    tp.paint(
+      context.canvas,
+      center - Offset(tp.width / 2, tp.height / 2),
+    );
+  }
+}
+
+// =============================================================================
+// INSTAGRAM-STYLE PILL TRACK SHAPE
+// =============================================================================
+
+class _PillTrackShape extends RoundedRectSliderTrackShape {
+  const _PillTrackShape();
+
+  @override
+  Rect getPreferredRect({
+    required RenderBox parentBox,
+    Offset offset = Offset.zero,
+    required SliderThemeData sliderTheme,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+  }) {
+    const double trackHeight = 10.0;
+    final double trackLeft = offset.dx;
+    final double trackTop =
+        offset.dy + (parentBox.size.height - trackHeight) / 2;
+    final double trackWidth = parentBox.size.width;
+    return Rect.fromLTWH(trackLeft, trackTop, trackWidth, trackHeight);
   }
 }
 
@@ -374,6 +252,7 @@ class RatingBar extends StatefulWidget {
   final double userRating;
   final bool showSlider;
   final VoidCallback onEditRating;
+  final double averageRating;
 
   /// Optional override from parent. When null the widget self-resolves
   /// guidance by querying Supabase.
@@ -388,6 +267,7 @@ class RatingBar extends StatefulWidget {
     required this.userRating,
     required this.showSlider,
     required this.onEditRating,
+    this.averageRating = 5.0,
     this.showGuidance,
   }) : super(key: key);
 
@@ -411,39 +291,23 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   late Animation<double> _sliderSlide;
   late Animation<double> _sliderFade;
 
-  late AnimationController _pulseController;
-  late Animation<double> _pulseScale;
-
-  late AnimationController _shimmerController;
-  late Animation<double> _shimmerAnimation;
-
   late AnimationController _nudgeController;
   late Animation<double> _nudgeRating;
-  late Animation<double> _nudgeThumbPos;
-
-  late AnimationController _arrowBounceController;
-  late Animation<double> _arrowBounce;
 
   late AnimationController _nudgeGlowController;
   late Animation<double> _nudgeGlow;
 
-  late AnimationController _iconWiggleController;
-  late Animation<double> _iconWiggle;
-
   bool _isNudging = false;
   late double _currentRating;
   bool _isDragging = false;
-  bool _justSubmitted = false;
 
   // ── overlay ───────────────────────────────────────────────────────────────
   OverlayEntry? _fallingOverlayEntry;
 
-  Color? _cachedSliderActiveColor;
-  Color? _cachedSliderInactiveColor;
   ThemeProvider? _lastThemeProvider;
 
   static const double _nudgeStart = 5.0;
-  static const double _nudgePeak = 8.5;
+  static const double _nudgePeak = 8.0;
 
   bool get _shouldNudge =>
       widget.showSlider && !widget.hasRated && _effectiveShowGuidance;
@@ -453,7 +317,7 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    _currentRating = widget.initialRating.roundToDouble();
+    _currentRating = widget.initialRating;
 
     _scaleController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 450));
@@ -466,16 +330,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         parent: _sliderEntranceController, curve: Curves.easeOut));
     _sliderFade = CurvedAnimation(
         parent: _sliderEntranceController, curve: Curves.easeIn);
-
-    _pulseController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 120));
-    _pulseScale = Tween<double>(begin: 1.0, end: 1.18).animate(
-        CurvedAnimation(parent: _pulseController, curve: Curves.easeOut));
-
-    _shimmerController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 800));
-    _shimmerAnimation = Tween<double>(begin: -1.0, end: 2.0).animate(
-        CurvedAnimation(parent: _shimmerController, curve: Curves.easeInOut));
 
     _nudgeController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 1800));
@@ -494,58 +348,16 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
           tween: ConstantTween<double>(_nudgeStart), weight: 38.9),
     ]).animate(_nudgeController);
 
-    _nudgeThumbPos = TweenSequence<double>([
-      TweenSequenceItem(
-          tween: ConstantTween<double>(_ratingToNorm(_nudgeStart)),
-          weight: 16.7),
-      TweenSequenceItem(
-          tween: Tween<double>(
-                  begin: _ratingToNorm(_nudgeStart),
-                  end: _ratingToNorm(_nudgePeak))
-              .chain(CurveTween(curve: Curves.easeInOut)),
-          weight: 22.2),
-      TweenSequenceItem(
-          tween: Tween<double>(
-                  begin: _ratingToNorm(_nudgePeak),
-                  end: _ratingToNorm(_nudgeStart))
-              .chain(CurveTween(curve: Curves.easeInOut)),
-          weight: 22.2),
-      TweenSequenceItem(
-          tween: ConstantTween<double>(_ratingToNorm(_nudgeStart)),
-          weight: 38.9),
-    ]).animate(_nudgeController);
-
     _nudgeController.addListener(() {
       if (_isNudging && mounted && !_isDragging) {
         setState(() => _currentRating = _nudgeRating.value);
       }
     });
 
-    _arrowBounceController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 500))
-      ..repeat(reverse: true);
-    _arrowBounce = Tween<double>(begin: 0.0, end: 10.0).animate(CurvedAnimation(
-        parent: _arrowBounceController, curve: Curves.easeInOut));
-
     _nudgeGlowController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 600));
     _nudgeGlow = Tween<double>(begin: 0.0, end: 1.0).animate(
         CurvedAnimation(parent: _nudgeGlowController, curve: Curves.easeInOut));
-
-    _iconWiggleController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 1800));
-    _iconWiggle = TweenSequence<double>([
-      TweenSequenceItem(tween: ConstantTween<double>(0.0), weight: 16.7),
-      TweenSequenceItem(
-          tween: Tween<double>(begin: 0.0, end: 5.0)
-              .chain(CurveTween(curve: Curves.easeInOut)),
-          weight: 22.2),
-      TweenSequenceItem(
-          tween: Tween<double>(begin: 5.0, end: 0.0)
-              .chain(CurveTween(curve: Curves.easeInOut)),
-          weight: 22.2),
-      TweenSequenceItem(tween: ConstantTween<double>(0.0), weight: 38.9),
-    ]).animate(_iconWiggleController);
 
     if (widget.showSlider) {
       _sliderEntranceController.forward().then((_) {
@@ -553,14 +365,6 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
       });
     } else if (!widget.showSlider && widget.hasRated) {
       _scaleController.forward();
-      _justSubmitted = true;
-      Future.delayed(const Duration(milliseconds: 80), () {
-        if (mounted) {
-          _shimmerController.forward(from: 0.0).then((_) {
-            if (mounted) setState(() => _justSubmitted = false);
-          });
-        }
-      });
     }
   }
 
@@ -597,10 +401,9 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
 
       if (!mounted) return;
 
-      final bool shouldShow = ratingCount < threshold;
       setState(() {
         _isTestGroup = isTestGroup;
-        _resolvedGuidance = shouldShow;
+        _resolvedGuidance = ratingCount < threshold;
         _guidanceLoaded = true;
       });
 
@@ -638,13 +441,10 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         },
       ),
     );
-
     overlay.insert(_fallingOverlayEntry!);
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
-
-  double _ratingToNorm(double rating) => (rating - 1) / 9.0;
 
   void _startNudge() {
     if (_isDragging || !mounted) return;
@@ -654,13 +454,11 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     });
     _nudgeGlowController.repeat(reverse: true);
     _nudgeController.repeat();
-    _iconWiggleController.repeat();
   }
 
   void _stopNudge() {
     _nudgeController.stop();
     _nudgeGlowController.stop();
-    _iconWiggleController.stop();
     _nudgeGlowController.animateTo(0.0,
         duration: const Duration(milliseconds: 150));
     if (mounted) setState(() => _isNudging = false);
@@ -683,28 +481,19 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         }
       });
       if (!_isDragging) {
-        _currentRating = widget.userRating > 0
-            ? widget.userRating.roundToDouble()
-            : widget.initialRating.roundToDouble();
+        _currentRating =
+            widget.userRating > 0 ? widget.userRating : widget.initialRating;
       }
     }
 
     if (!widget.showSlider && oldWidget.showSlider) {
       _stopNudge();
       _scaleController.forward(from: 0.0);
-      _justSubmitted = true;
-      Future.delayed(const Duration(milliseconds: 80), () {
-        if (mounted) {
-          _shimmerController.forward(from: 0.0).then((_) {
-            if (mounted) setState(() => _justSubmitted = false);
-          });
-        }
-      });
     }
 
     if (!_isDragging && !_isNudging) {
       if (widget.userRating != oldWidget.userRating) {
-        _currentRating = widget.userRating.roundToDouble();
+        _currentRating = widget.userRating;
       }
     }
 
@@ -716,40 +505,24 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
   // ── interaction ───────────────────────────────────────────────────────────
 
   void _onRatingChanged(double newRating) {
-    final rounded = newRating.roundToDouble();
     if (_isNudging) _stopNudge();
     setState(() {
-      _currentRating = rounded;
+      _currentRating = newRating;
       _isDragging = true;
     });
-    widget.onRatingUpdate?.call(rounded);
-    _pulseController.forward(from: 0.0).then((_) => _pulseController.reverse());
+    widget.onRatingUpdate?.call(newRating);
   }
 
   void _onRatingEnd(double rating) {
-    final rounded = rating.roundToDouble();
     setState(() => _isDragging = false);
 
-    if (rounded >= 10.0 && _isTestGroup) {
+    if (rating >= 10.0 && _isTestGroup) {
       Future.delayed(const Duration(milliseconds: 150), () {
         if (mounted) _triggerFallingTens();
       });
     }
 
-    widget.onRatingEnd(rounded);
-  }
-
-  // ── colors ────────────────────────────────────────────────────────────────
-
-  void _updateCachedColors(ThemeProvider themeProvider) {
-    if (_lastThemeProvider != themeProvider) {
-      _lastThemeProvider = themeProvider;
-      final isDark = themeProvider.themeMode == ThemeMode.dark;
-      _cachedSliderActiveColor =
-          isDark ? const Color(0xFFd9d9d9) : Colors.black;
-      _cachedSliderInactiveColor =
-          isDark ? const Color(0xFF333333) : Colors.grey[400]!;
-    }
+    widget.onRatingEnd(rating);
   }
 
   // ── dispose ───────────────────────────────────────────────────────────────
@@ -760,35 +533,94 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     _fallingOverlayEntry = null;
     _scaleController.dispose();
     _sliderEntranceController.dispose();
-    _pulseController.dispose();
-    _shimmerController.dispose();
     _nudgeController.dispose();
-    _arrowBounceController.dispose();
     _nudgeGlowController.dispose();
-    _iconWiggleController.dispose();
     super.dispose();
   }
 
-  // ── "You rated" heart display ─────────────────────────────────────────────
-  // Replaces the old pill button. Tapping it still triggers onEditRating.
+  // ── Average answer display (shown after rating) ───────────────────────────
 
-  Widget _buildRatingButton() {
+  Widget _buildAverageDisplay() {
+    // Normalise average to 0.0–1.0 across the 1–10 range.
+    final double norm = ((widget.averageRating - 1) / 9.0).clamp(0.0, 1.0);
+
     return ScaleTransition(
       scale: _scaleAnimation,
       child: GestureDetector(
         onTap: widget.onEditRating,
-        child: Stack(
-          alignment: Alignment.center,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.favorite, color: Colors.red, size: 56),
+            // ── Track + emoji ──────────────────────────────────────────
+            SizedBox(
+              height: 44,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  const double emojiSize = 32.0;
+                  const double trackH = 10.0;
+                  const double trackVertical = (44 - trackH) / 2;
+                  final double usable = constraints.maxWidth - emojiSize;
+                  final double emojiLeft = norm * usable;
+                  final double fillEnd = emojiLeft + emojiSize / 2;
+
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      // Background track
+                      Positioned(
+                        top: trackVertical,
+                        left: 0,
+                        right: 0,
+                        child: Container(
+                          height: trackH,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.20),
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                        ),
+                      ),
+                      // Filled portion
+                      Positioned(
+                        top: trackVertical,
+                        left: 0,
+                        width: fillEnd.clamp(0, constraints.maxWidth),
+                        child: Container(
+                          height: trackH,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.65),
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                        ),
+                      ),
+                      // Heart-eyes emoji at average position
+                      Positioned(
+                        left: emojiLeft,
+                        top: (44 - emojiSize) / 2,
+                        child: Text(
+                          '😍',
+                          style: TextStyle(
+                            fontSize: emojiSize,
+                            height: 1.0,
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 4),
+            // ── Label ─────────────────────────────────────────────────
             Text(
-              widget.userRating.round().toString(),
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
+              'average answer',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.75),
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
                 fontFamily: 'Inter',
-                height: 1.0,
+                letterSpacing: 0.1,
                 decoration: TextDecoration.none,
               ),
             ),
@@ -798,31 +630,9 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     );
   }
 
-  // ── Inline heart rating (right of slider while dragging) ─────────────────
+  // ── Active slider ─────────────────────────────────────────────────────────
 
-  Widget _buildHeartRating(double rating) {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        const Icon(Icons.favorite, color: Colors.red, size: 38),
-        Text(
-          rating.round().toString(),
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 13,
-            fontWeight: FontWeight.w900,
-            fontFamily: 'Inter',
-            height: 1.0,
-            decoration: TextDecoration.none,
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ── Slider ────────────────────────────────────────────────────────────────
-
-  Widget _buildRatingSlider(ThemeProvider themeProvider) {
+  Widget _buildRatingSlider() {
     return AnimatedBuilder(
       animation: _sliderEntranceController,
       builder: (context, child) {
@@ -836,13 +646,14 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
         padding: const EdgeInsets.symmetric(vertical: 4.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            // ── Guidance chip ─────────────────────────────────────────
+            // ── "Slide the bar" guidance chip ─────────────────────────
             AnimatedOpacity(
-              opacity: _isNudging ? 1.0 : 0.0,
+              opacity: _isNudging && _effectiveShowGuidance ? 1.0 : 0.0,
               duration: const Duration(milliseconds: 200),
               child: Padding(
-                padding: const EdgeInsets.only(left: 4.0, bottom: 6.0),
+                padding: const EdgeInsets.only(bottom: 6.0),
                 child: AnimatedBuilder(
                   animation: _nudgeGlow,
                   builder: (context, _) {
@@ -860,138 +671,50 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
                               spreadRadius: 1),
                         ],
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 7,
-                            height: 7,
-                            margin: const EdgeInsets.only(right: 7),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.black
-                                  .withOpacity(0.5 + 0.5 * glow),
-                              boxShadow: [
-                                BoxShadow(
-                                    color: Colors.black
-                                        .withOpacity(0.2 * glow),
-                                    blurRadius: 4,
-                                    spreadRadius: 1)
-                              ],
-                            ),
-                          ),
-                          Text(
-                            'Slide the bar',
-                            style: TextStyle(
-                              color: Colors.black
-                                  .withOpacity(0.75 + 0.25 * glow),
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              fontFamily: 'Inter',
-                              letterSpacing: 0.2,
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        'Slide the bar',
+                        style: TextStyle(
+                          color: Colors.black.withOpacity(0.75 + 0.25 * glow),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          fontFamily: 'Inter',
+                          letterSpacing: 0.2,
+                          decoration: TextDecoration.none,
+                        ),
                       ),
                     );
                   },
                 ),
               ),
             ),
-            // ── Slider row with inline heart ──────────────────────────
-            LayoutBuilder(
-              builder: (context, constraints) {
-                return AnimatedBuilder(
-                  animation: Listenable.merge([
-                    _nudgeGlow,
-                    _arrowBounceController,
-                    _nudgeController,
-                  ]),
-                  builder: (context, child) {
-                    final double displayRating =
-                        _isNudging ? _nudgeRating.value : _currentRating;
+            // ── Slider ────────────────────────────────────────────────
+            AnimatedBuilder(
+              animation: Listenable.merge([_nudgeGlow, _nudgeController]),
+              builder: (context, child) {
+                final double displayRating =
+                    _isNudging ? _nudgeRating.value : _currentRating;
 
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Expanded(
-                          child: SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              // ── Heart tooltip while dragging ──────────
-                              valueIndicatorShape:
-                                  const _HeartValueIndicatorShape(),
-                              showValueIndicator:
-                                  ShowValueIndicator.always,
-                              valueIndicatorTextStyle: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w900,
-                                fontFamily: 'Inter',
-                                height: 1.0,
-                              ),
-                              thumbShape: _effectiveShowGuidance
-                                  ? _EmojiThumbShape(
-                                      emoji: '👆',
-                                      size: 30.0,
-                                      showArrow: _isNudging &&
-                                          _effectiveShowGuidance,
-                                      arrowBounce: _arrowBounce.value,
-                                      arrowOpacity: (_isNudging &&
-                                              _effectiveShowGuidance)
-                                          ? 0.6 + 0.4 * _nudgeGlow.value
-                                          : 0.0,
-                                    )
-                                  : const RoundSliderThumbShape(
-                                      enabledThumbRadius: 10.0),
-                              overlayShape:
-                                  SliderComponentShape.noOverlay,
-                              trackHeight: 3.0,
-                              activeTrackColor: _isNudging
-                                  ? (_cachedSliderActiveColor ??
-                                          Colors.white)
-                                      .withOpacity(0.85)
-                                  : _cachedSliderActiveColor,
-                              inactiveTrackColor:
-                                  _cachedSliderInactiveColor,
-                            ),
-                            child: Container(
-                              decoration: _isNudging
-                                  ? BoxDecoration(
-                                      borderRadius:
-                                          BorderRadius.circular(12),
-                                      boxShadow: [
-                                        BoxShadow(
-                                            color: Colors.white.withOpacity(
-                                                0.07 * _nudgeGlow.value),
-                                            blurRadius: 12,
-                                            spreadRadius: 2)
-                                      ],
-                                    )
-                                  : const BoxDecoration(),
-                              child: Slider(
-                                value: displayRating.clamp(1.0, 10.0),
-                                min: 1,
-                                max: 10,
-                                divisions: 9,
-                                label: displayRating.round().toString(),
-                                activeColor: _isNudging
-                                    ? (_cachedSliderActiveColor ??
-                                            Colors.white)
-                                        .withOpacity(0.85)
-                                    : _cachedSliderActiveColor,
-                                inactiveColor: _cachedSliderInactiveColor,
-                                onChanged: _onRatingChanged,
-                                onChangeEnd: _onRatingEnd,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        // Inline heart showing the current whole number
-                        _buildHeartRating(displayRating),
-                      ],
-                    );
-                  },
+                return SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    thumbShape: const _HeartEyesThumbShape(size: 32.0),
+                    trackShape: const _PillTrackShape(),
+                    overlayShape: SliderComponentShape.noOverlay,
+                    // No value indicator (no numbers while sliding)
+                    showValueIndicator: ShowValueIndicator.never,
+                    trackHeight: 10.0,
+                    activeTrackColor:
+                        Colors.white.withOpacity(_isNudging ? 0.70 : 0.65),
+                    inactiveTrackColor: Colors.white.withOpacity(0.20),
+                    thumbColor: Colors.transparent,
+                  ),
+                  child: Slider(
+                    value: displayRating.clamp(1.0, 10.0),
+                    min: 1.0,
+                    max: 10.0,
+                    // No divisions → perfectly smooth drag, no snapping
+                    onChanged: _onRatingChanged,
+                    onChangeEnd: _onRatingEnd,
+                  ),
                 );
               },
             ),
@@ -1001,34 +724,29 @@ class _RatingBarState extends State<RatingBar> with TickerProviderStateMixin {
     );
   }
 
-  // ── build ──────────────────────────────────────────────────────────────────
+  // ── build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    _updateCachedColors(themeProvider);
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 250),
-          switchInCurve: Curves.easeOut,
-          switchOutCurve: Curves.easeIn,
-          transitionBuilder: (child, animation) =>
-              FadeTransition(opacity: animation, child: child),
-          child: !widget.showSlider && widget.hasRated
-              ? Center(
-                  key: const ValueKey('button'), child: _buildRatingButton())
-              : widget.showSlider
-                  ? SizedBox(
-                      key: const ValueKey('slider'),
-                      width: double.infinity,
-                      child: _buildRatingSlider(themeProvider))
-                  : const SizedBox.shrink(key: ValueKey('empty')),
-        ),
-      ],
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 300),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, animation) =>
+          FadeTransition(opacity: animation, child: child),
+      child: !widget.showSlider && widget.hasRated
+          ? SizedBox(
+              key: const ValueKey('average'),
+              width: double.infinity,
+              child: _buildAverageDisplay(),
+            )
+          : widget.showSlider
+              ? SizedBox(
+                  key: const ValueKey('slider'),
+                  width: double.infinity,
+                  child: _buildRatingSlider(),
+                )
+              : const SizedBox.shrink(key: ValueKey('empty')),
     );
   }
 }
